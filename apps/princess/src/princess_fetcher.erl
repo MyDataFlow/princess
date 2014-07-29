@@ -21,8 +21,7 @@
 -define(OPTIONS,
 	[binary,
 		{reuseaddr, true},
-		{active, onec},
-		{nodelay, true}
+		{active, once}
   ]).
 -define(TIMEOUT,10000).
 -record(state, {}).
@@ -31,6 +30,7 @@
 %%% API
 %%%===================================================================
 fetch(Pid,ID,Address,Port)->
+	lager:log(info,?MODULE,"fetch ~n"),
 	gen_server:call(?SERVER,{fetch,Pid,ID,Address,Port}).
 to_free(Pid,ID,Bin)->
 	gen_server:cast(?SERVER,{to_free,Pid,ID,Bin}).
@@ -82,10 +82,16 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call({fetch,Pid,ID,Address,Port},_From,State)->
+	lager:log(info,?MODULE,"fetch for id:~p~n",[ID]),
 	hm_misc:monitor(Pid,fetcher_monitor),
-	case ranch_tcp:connect(Address, Port, ?OPTIONS, ?TIMEOUT) of
+	lager:log(info,?MODULE,"fetch Address:~p Port:~p~n",[Address,Port]),
+	Addr = erlang:binary_to_list(Address),
+	Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
+	lager:log(info,?MODULE,"fetch for id:~p~n",[ID]),
+	case Result of
   	{ok, TargetSocket} ->
-    	ets:insert(fetcher_socket, {TargetSocket,Pid,ID}),
+  		lager:log(info,?MODULE,"fetch socket:~p~n",[TargetSocket]),
+    	ets:insert(fetcher_socket, {TargetSocket,{Pid,ID}}),
    		{reply,{ok,TargetSocket},State};
     {error, Error} ->
       {reply,{error,Error},State}
@@ -106,8 +112,8 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({client_close,Pid,ID},State)->
-	case ets:match_object(fetcher_socket,{'_',Pid,ID}) of
-		[{Socket,Pid,ID}] ->
+	case ets:match_object(fetcher_socket,{'_',{Pid,ID}}) of
+		[{Socket,{Pid,ID}}] ->
 			ets:delete(fetcher_socket,Socket),
 			ranch_tcp:close(Socket),
 			{noreply, State};
@@ -115,8 +121,8 @@ handle_cast({client_close,Pid,ID},State)->
 	  	{noreply, State}
 	end;
 handle_cast({to_free,Pid,ID,Bin},State)->
-	case ets:match_object(fetcher_socket,{'_',Pid,ID}) of
-		[{Socket,Pid,ID}] ->
+	case ets:match_object(fetcher_socket,{'_',{Pid,ID}}) of
+		[{Socket,{Pid,ID}}] ->
 			ranch_tcp:send(Socket,Bin),
 			{noreply, State};
     [] ->
@@ -136,8 +142,9 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({tcp_closed, Socket},State) ->
-	case ets:match_object(fetcher_socket,{Socket,'_','_'}) of
-		[{Socket,Pid,ID}] ->
+	case ets:match_object(fetcher_socket,{Socket,'_'}) of
+		[{Socket,{Pid,ID}}] ->
+			ets:delete(fetcher_socket,Socket),
 	  	magic_protocol:remote_close(Pid,ID),
 			{noreply, State};
     [] ->
@@ -145,8 +152,8 @@ handle_info({tcp_closed, Socket},State) ->
 	end;
 
 handle_info({tcp, Socket, Bin},State)->
-	case ets:match_object(fetcher_socket,{Socket,'_','_'}) of
-		[{Socket,Pid,ID}] ->
+	case ets:match_object(fetcher_socket,{Socket,'_'}) of
+		[{Socket,{Pid,ID}}] ->
 	  	magic_protocol:to_fog(Pid,ID,Bin),
 			{noreply, State};
     [] ->
@@ -154,7 +161,7 @@ handle_info({tcp, Socket, Bin},State)->
 	end;
 handle_info({'DOWN', _MonitorRef, process, Pid, _Info},State) -> 
 	hm_misc:demonitor(Pid,fetcher_monitor),
-	case ets:match_object(fetcher_socket,{'_',Pid,'_'}) of
+	case ets:match_object(fetcher_socket,{'_',{Pid,'_'}}) of
 		[] ->
 			{noreply,State};
 		Any ->
@@ -196,7 +203,7 @@ code_change(_OldVsn, State, _Extra) ->
 loop_close([])->
 	ok;
 loop_close([H|T])->
-	{Socket,_Pid,_ID} = H,
+	{Socket,{_Pid,_ID}} = H,
 	ets:delete(fetcher_socket,Socket),
 	ranch_tcp:close(Socket),
 	loop_close(T).

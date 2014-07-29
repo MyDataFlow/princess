@@ -184,16 +184,19 @@ packet([<<0:64/integer,0:32/integer>>|T],Socket,Transport)->
 	Transport:send(Socket,Data),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],Socket,Transport)->
+	lager:log(info,?MODULE,"fetch~n"),
 	<<AddrLen:32/big,Rest2/bits>> = Rest,
 	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
 	Pid = self(),
 	princess_fetcher:fetch(Pid,ID,Addr,Port),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],Socket,Transport)->
+	lager:log(info,?MODULE,"more data~n"),
 	Pid = self(),
 	princess_fetcher:to_free(Pid,ID,Rest),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,3:32/integer,_Rest/bits>>|T],Socket,Transport)->
+	lager:log(info,?MODULE,"close~n"),
 	Pid = self(),
 	princess_fetcher:client_close(Pid,ID),
 	packet(T,Socket,Transport).
