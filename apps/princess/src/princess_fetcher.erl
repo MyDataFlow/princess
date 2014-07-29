@@ -158,15 +158,15 @@ handle_info({tcp_closed, Socket},State) ->
 	end;
 
 handle_info({tcp, Socket, Bin},State)->
- 	ok = ranch_tcp:setopts(Socket, [{active, false}]),
+ 	ranch_tcp:setopts(Socket, [{active, false}]),
 	case ets:match_object(fetcher_socket,{Socket,'_'}) of
 		[{Socket,{Pid,ID}}] ->
 			lager:log(info,?MODULE,"to_fog for id:~p~n",[ID]),
 	  	magic_protocol:to_fog(Pid,ID,Bin),
-	  	ok = ranch_tcp:setopts(Socket, [{active, once}]),
+	  	ranch_tcp:setopts(Socket, [{active, once}]),
 			{noreply, State};
     [] ->
-    	ok = ranch_tcp:setopts(Socket, [{active, once}]),
+    	ranch_tcp:setopts(Socket, [{active, once}]),
 	  	{noreply, State}
 	end;
 handle_info({'DOWN', _MonitorRef, process, Pid, _Info},State) -> 
