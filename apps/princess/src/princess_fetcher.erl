@@ -83,14 +83,19 @@ init([]) ->
 handle_call({fetch,Pid,ID,Address,Port},_From,State)->
 	hm_misc:monitor(Pid,fetcher_monitor),
 	Addr = erlang:binary_to_list(Address),
-	Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
-	case Result of
-  	{ok, TargetSocket} ->
-    	ets:insert(fetcher_socket, {TargetSocket,{Pid,ID}}),
-    	ranch_tcp:setopts(TargetSocket, [{active, once}]),
-   		{reply,{ok,TargetSocket},State};
-    {error, Error} ->
-      {reply,{error,Error},State}
+	try
+		Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
+		case Result of
+  		{ok, TargetSocket} ->
+    		ets:insert(fetcher_socket, {TargetSocket,{Pid,ID}}),
+    		ranch_tcp:setopts(TargetSocket, [{active, once}]),
+   			{reply,{ok,TargetSocket},State};
+    	{error, Error} ->
+      	{reply,{error,Error},State}
+  	end
+  catch
+  	_:Reason ->
+  		{reply,{error,Reason},State}
   end;
 
 handle_call(_Request, _From, State) ->
@@ -117,6 +122,7 @@ handle_cast({client_close,Pid,ID},State)->
     [] ->
 	  	{noreply, State}
 	end;
+
 handle_cast({to_free,Pid,ID,Bin},State)->
 	case ets:match_object(fetcher_socket,{'_',{Pid,ID}}) of
 		[{Socket,{Pid,ID}}] ->
