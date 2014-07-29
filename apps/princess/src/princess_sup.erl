@@ -26,10 +26,9 @@ start_link() ->
 init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
 
-	%%GenConf = fog_config:get(gen),
-	%%GeneratorMFA = {generator_worker, start_link, [GenConf]},                                                                
- 	%%GeneratorWorker = {generator_worker,GeneratorMFA,permanent,5000,worker,[]}, 
+	FetcherMFA = {princess_fetcher, start_link, []},                                                                
+ 	FetcherWorker = {princess_fetcher,FetcherMFA,permanent,5000,worker,[]}, 
 
-	Children = [],
+	Children = [FetcherWorker],
   {ok, { RestartStrategy,Children} }.
 

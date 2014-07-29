@@ -6,33 +6,36 @@
 %%% @end
 %%% Created : 29 Jul 2014 by David Alpha Fox <>
 %%%-------------------------------------------------------------------
--module(magic_protocol).
+-module(princess_fetcher).
 
 -behaviour(gen_server).
 
 %% API
--export([start_link/4]).
+-export([start_link/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
--export([remote_close/2,to_fog/3]).
+-export([fetch/4,to_free/3,client_close/2]).
 -define(SERVER, ?MODULE).
--define(TIMEOUT, 60000).
-
--record(state, {
-	socket,
-	transport,
-	buff
-	}).
-remote_close(Pid,ID)->
-	gen_server:cast(Pid,{remote_close,ID}).
-to_fog(Pid,ID,Bin)->
-	gen_server:cast(Pid,{to_fog,ID,Bin}).
+-define(OPTIONS,
+	[binary,
+		{reuseaddr, true},
+		{active, onec},
+		{nodelay, true}
+  ]).
+-define(TIMEOUT,10000).
+-record(state, {}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+fetch(Pid,ID,Address,Port)->
+	gen_server:call(?SERVER,{fetch,Pid,ID,Address,Port}).
+to_free(Pid,ID,Bin)->
+	gen_server:cast(?SERVER,{to_free,Pid,ID,Bin}).
+client_close(Pid,ID)->
+	gen_server:cast(?SERVER,{client_close,Pid,ID}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -41,11 +44,8 @@ to_fog(Pid,ID,Bin)->
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(ListenerPid, Socket, Transport, _Opts) ->
-	{ok,Pid} = gen_server:start_link(?MODULE, [], []),
-	lager:log(info,?MODULE,"start_link ~n"),
-	set_socket(Pid,ListenerPid,Socket,Transport),
-	{ok,Pid}.
+start_link() ->
+	gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -63,12 +63,9 @@ start_link(ListenerPid, Socket, Transport, _Opts) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-	State = #state{
-		socket = undefined,
-		transport = undefined,
-		buff = <<>>
-	},
-	{ok, State}.
+	fetcher_monitor = ets:new(fetcher_monitor, [ordered_set, protected, named_table]),   
+	fetcher_socket = ets:new(fetcher_socket, [ordered_set, protected, named_table]),   
+	{ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -84,6 +81,16 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_call({fetch,Pid,ID,Address,Port},_From,State)->
+	hm_misc:monitor(Pid,fetcher_monitor),
+	case ranch_tcp:connect(Address, Port, ?OPTIONS, ?TIMEOUT) of
+  	{ok, TargetSocket} ->
+    	ets:insert(fetcher_socket, {TargetSocket,Pid,ID}),
+   		{reply,{ok,TargetSocket},State};
+    {error, Error} ->
+      {reply,{error,Error},State}
+  end;
+
 handle_call(_Request, _From, State) ->
 	Reply = ok,
 	{reply, Reply, State}.
@@ -98,22 +105,23 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-
-handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->
-	lager:log(info,?MODULE,"socket_ready~n"),
-	ranch:accept_ack(ListenerPid),
-	ok = Transport:setopts(Socket, [{active, once}, binary]),
-	NewState = State#state{socket = Socket,transport = Transport},
-	{noreply,NewState};
-
-handle_cast({remote_close,ID},#state{socket = Socket,transport = Transport} = State)->
-	Packet = pack(ID,3,<<>>),
-	Transport:send(Socket,Packet),
-	{noreply,State};
-handle_cast({to_fog,ID,Bin},#state{socket = Socket,transport = Transport} = State)->
-	Packet = pack(ID,2,Bin),
-	Transport:send(Socket,Packet),
-	{noreply,State};
+handle_cast({client_close,Pid,ID},State)->
+	case ets:match_object(fetcher_socket,{'_',Pid,ID}) of
+		[{Socket,Pid,ID}] ->
+			ets:delete(fetcher_socket,Socket),
+			ranch_tcp:close(Socket),
+			{noreply, State};
+    [] ->
+	  	{noreply, State}
+	end;
+handle_cast({to_free,Pid,ID,Bin},State)->
+	case ets:match_object(fetcher_socket,{'_',Pid,ID}) of
+		[{Socket,Pid,ID}] ->
+			ranch_tcp:send(Socket,Bin),
+			{noreply, State};
+    [] ->
+	  	{noreply, State}
+	end;
 handle_cast(_Msg, State) ->
 	{noreply, State}.
 
@@ -127,20 +135,33 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({ssl, Socket, Bin},#state{socket = Socket,transport = Transport,buff = Buff} = State) ->
-  % Flow control: enable forwarding of next TCP message
-  ok = Transport:setopts(Socket, [{active, false}]),
-  {Packet,NewBuff} = unpack(<<Buff/bits,Bin/bits>>,[]),
-  packet(Packet,Socket,Transport),
-  ok = Transport:setopts(Socket, [{active, once}]),
-  NewState = State#state{buff = NewBuff},
-  {noreply,NewState};
+handle_info({tcp_closed, Socket},State) ->
+	case ets:match_object(fetcher_socket,{Socket,'_','_'}) of
+		[{Socket,Pid,ID}] ->
+	  	magic_protocol:remote_close(Pid,ID),
+			{noreply, State};
+    [] ->
+	  	{noreply, State}
+	end;
 
-handle_info({ssl_closed, Socket}, #state{socket = Socket} = State) ->
-  {stop, normal, State};
+handle_info({tcp, Socket, Bin},State)->
+	case ets:match_object(fetcher_socket,{Socket,'_','_'}) of
+		[{Socket,Pid,ID}] ->
+	  	magic_protocol:to_fog(Pid,ID,Bin),
+			{noreply, State};
+    [] ->
+	  	{noreply, State}
+	end;
+handle_info({'DOWN', _MonitorRef, process, Pid, _Info},State) -> 
+	hm_misc:demonitor(Pid,fetcher_monitor),
+	case ets:match_object(fetcher_socket,{'_',Pid,'_'}) of
+		[] ->
+			{noreply,State};
+		Any ->
+			loop_close(Any),
+  		{noreply, State}
+  end;
 
-handle_info(timeout,State)->
-	{stop,timeout,State};
 handle_info(_Info, State) ->
 	{noreply, State}.
 
@@ -156,7 +177,6 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-	lager:log(info,?MODULE,"stop"),
 	ok.
 
 %%--------------------------------------------------------------------
@@ -173,39 +193,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-set_socket(Client,ListenerPid,Socket,Transport) ->
-	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
-
-packet([],_Socket,_Transport)->
+loop_close([])->
 	ok;
-packet([<<0:64/integer,0:32/integer>>|T],Socket,Transport)->
-	Data = pack(0,0,<<>>),
-	Transport:send(Socket,Data),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],Socket,Transport)->
-	<<AddrLen:32/big,Rest2/bits>> = Rest,
-	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
-	Pid = self(),
-	princess_fetcher:fetch(Pid,ID,Addr,Port),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],Socket,Transport)->
-	Pid = self(),
-	princess_fetcher:to_free(Pid,ID,Rest),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,3:32/integer,_Rest/bits>>|T],Socket,Transport)->
-	Pid = self(),
-	princess_fetcher:client_close(Pid,ID),
-	packet(T,Socket,Transport).
-
-pack(ID,OP,Data)->
-	R1 = <<ID:64/integer,OP:32/integer,Data/bits>>,
-	Len = erlang:byte_size(R1),
-	<<Len:32/big,R1/bits>>.
-
-unpack(Data,Acc) when byte_size(Data) < 4 ->
-	{lists:reverse(Acc),Data};
-unpack(<<Len:32/big,PayLoad/bits>> = Data,Acc) when Len > byte_size(PayLoad) ->
-	{lists:reverse(Acc),Data};
-unpack(<<Len:32/big, _/bits >> = Data, Acc) ->                                                                                                                                                                                                                                                 
-  << _:32/big,Packet:Len/binary, Rest/bits >> = Data,
-  unpack(Rest,[Packet|Acc]).
+loop_close([H|T])->
+	{Socket,_Pid,_ID} = H,
+	ets:delete(fetcher_socket,Socket),
+	ranch_tcp:close(Socket),
+	loop_close(T).
