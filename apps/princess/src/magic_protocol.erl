@@ -179,6 +179,7 @@ set_socket(Client,ListenerPid,Socket,Transport) ->
 packet([],_Socket,_Transport)->
 	ok;
 packet([<<0:64/integer,0:32/integer>>|T],Socket,Transport)->
+	lager:log(info,?MODULE,"ping~n"),
 	Data = pack(0,0,<<>>),
 	Transport:send(Socket,Data),
 	packet(T,Socket,Transport);
