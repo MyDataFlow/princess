@@ -110,6 +110,7 @@ handle_cast({remote_close,ID},#state{socket = Socket,transport = Transport} = St
 	Packet = pack(ID,3,<<>>),
 	Transport:send(Socket,Packet),
 	{noreply,State};
+	
 handle_cast({to_fog,ID,Bin},#state{socket = Socket,transport = Transport} = State)->
 	Packet = pack(ID,2,Bin),
 	Transport:send(Socket,Packet),
@@ -179,29 +180,30 @@ set_socket(Client,ListenerPid,Socket,Transport) ->
 packet([],_Socket,_Transport)->
 	ok;
 packet([<<0:64/integer,0:32/integer>>|T],Socket,Transport)->
-	lager:log(info,?MODULE,"ping~n"),
+	lager:log(info,?MODULE,"ping ~n"),
 	Data = pack(0,0,<<>>),
 	Transport:send(Socket,Data),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],Socket,Transport)->
-	lager:log(info,?MODULE,"fetch~n"),
 	<<AddrLen:32/big,Rest2/bits>> = Rest,
 	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
 	Pid = self(),
+	lager:log(info,?MODULE,"fetch id:~p Addr:~p, Port:~p~n",[ID,Addr,Port]),
 	princess_fetcher:fetch(Pid,ID,Addr,Port),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],Socket,Transport)->
-	lager:log(info,?MODULE,"more data~n"),
 	Pid = self(),
+	lager:log(info,?MODULE,"more data id:~p Data:~p~n",[ID,Rest]),
 	princess_fetcher:to_free(Pid,ID,Rest),
 	packet(T,Socket,Transport);
 packet([<<ID:64/integer,3:32/integer,_Rest/bits>>|T],Socket,Transport)->
-	lager:log(info,?MODULE,"close~n"),
 	Pid = self(),
+	lager:log(info,?MODULE,"close id:~p~n",[ID]),
 	princess_fetcher:client_close(Pid,ID),
 	packet(T,Socket,Transport).
 
 pack(ID,OP,Data)->
+	lager:log(info,?MODULE,"id:~p op:~p~n",[ID,OP]),
 	R1 = <<ID:64/integer,OP:32/integer,Data/bits>>,
 	Len = erlang:byte_size(R1),
 	<<Len:32/big,R1/bits>>.

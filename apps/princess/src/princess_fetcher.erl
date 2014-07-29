@@ -30,7 +30,6 @@
 %%% API
 %%%===================================================================
 fetch(Pid,ID,Address,Port)->
-	lager:log(info,?MODULE,"fetch ~n"),
 	gen_server:call(?SERVER,{fetch,Pid,ID,Address,Port}).
 to_free(Pid,ID,Bin)->
 	gen_server:cast(?SERVER,{to_free,Pid,ID,Bin}).
@@ -82,16 +81,13 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call({fetch,Pid,ID,Address,Port},_From,State)->
-	lager:log(info,?MODULE,"fetch for id:~p~n",[ID]),
 	hm_misc:monitor(Pid,fetcher_monitor),
-	lager:log(info,?MODULE,"fetch Address:~p Port:~p~n",[Address,Port]),
 	Addr = erlang:binary_to_list(Address),
 	Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
-	lager:log(info,?MODULE,"fetch for id:~p~n",[ID]),
 	case Result of
   	{ok, TargetSocket} ->
-  		lager:log(info,?MODULE,"fetch socket:~p~n",[TargetSocket]),
     	ets:insert(fetcher_socket, {TargetSocket,{Pid,ID}}),
+    	ranch_tcp:setopts(TargetSocket, [{active, once}]),
    		{reply,{ok,TargetSocket},State};
     {error, Error} ->
       {reply,{error,Error},State}
@@ -112,6 +108,7 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({client_close,Pid,ID},State)->
+
 	case ets:match_object(fetcher_socket,{'_',{Pid,ID}}) of
 		[{Socket,{Pid,ID}}] ->
 			ets:delete(fetcher_socket,Socket),
@@ -123,6 +120,7 @@ handle_cast({client_close,Pid,ID},State)->
 handle_cast({to_free,Pid,ID,Bin},State)->
 	case ets:match_object(fetcher_socket,{'_',{Pid,ID}}) of
 		[{Socket,{Pid,ID}}] ->
+			lager:log(info,?MODULE,"Found for id:~p~n",[ID]),
 			ranch_tcp:send(Socket,Bin),
 			{noreply, State};
     [] ->
@@ -142,9 +140,11 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({tcp_closed, Socket},State) ->
+	lager:log(info,?MODULE,"close Socket:~p~n",[Socket]),
 	case ets:match_object(fetcher_socket,{Socket,'_'}) of
 		[{Socket,{Pid,ID}}] ->
 			ets:delete(fetcher_socket,Socket),
+			lager:log(info,?MODULE,"send close Socket:~p~n",[Socket]),
 	  	magic_protocol:remote_close(Pid,ID),
 			{noreply, State};
     [] ->
@@ -152,11 +152,15 @@ handle_info({tcp_closed, Socket},State) ->
 	end;
 
 handle_info({tcp, Socket, Bin},State)->
+ 	ok = ranch_tcp:setopts(Socket, [{active, false}]),
 	case ets:match_object(fetcher_socket,{Socket,'_'}) of
 		[{Socket,{Pid,ID}}] ->
+			lager:log(info,?MODULE,"to_fog for id:~p~n",[ID]),
 	  	magic_protocol:to_fog(Pid,ID,Bin),
+	  	ok = ranch_tcp:setopts(Socket, [{active, once}]),
 			{noreply, State};
     [] ->
+    	ok = ranch_tcp:setopts(Socket, [{active, once}]),
 	  	{noreply, State}
 	end;
 handle_info({'DOWN', _MonitorRef, process, Pid, _Info},State) -> 
