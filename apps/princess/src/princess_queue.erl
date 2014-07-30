@@ -4,9 +4,9 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 29 Jul 2014 by David Alpha Fox <>
+%%% Created : 30 Jul 2014 by David Alpha Fox <>
 %%%-------------------------------------------------------------------
--module(princess_fetcher).
+-module(princess_queue).
 
 -behaviour(gen_server).
 
@@ -17,28 +17,39 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
 
--export([client_open/5,client_close/3,channel_close/2]).
+-export([client_open/3,client_close/1]).
+-export([remote_open/2,remote_close/2]).
+-export([transfer_to_channel/3,transfer_to_fetcher/3]).
 
--define(OPTIONS,
-	[binary,
-		{reuseaddr, true},
-		{active, once}
-  ]).
+-define(SERVER, ?MODULE).
 
--define(TIMEOUT,10000).
 -record(state, {
-		sockets
+		workers,
+		waiting,
+		monitors
 	}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-client_open(Pid,Channel,ID,Address,Port)->
-	gen_server:cast(Pid,{client_open,Channel,ID,Address,Port}).
-client_close(Pid,Channel,ID)->
-	gen_server:cast(Pid,{client_close,Channel,ID}).
-channel_close(Pid,Channel)->
-	gen_server:cast(Pid,{channel_close,Channel}).
+transfer_to_channel(Channel,ID,Bin)->
+  Fetcher = self(),
+	gen_server:cast(Channel,{transfer_to_channel,Fetcher,ID,Bin}).
+transfer_to_fetcher(Fetcher,ID,Bin)->
+  Channel = self(),
+	gen_server:cast(Fetcher,{transfer_to_fetcher,Channel,ID,Bin}).
+client_open(ID,Address,Port)->
+	Channel = self(),
+	gen_server:cast(?SERVER,{client_open,Channel,ID,Address,Port}).
+client_close(ID)->
+	Channel = self(),
+	gen_server:cast(?SERVER,{client_close,Channel,ID}).
+remote_open(Channel,ID)->
+	Fetcher = self(),
+	gen_server:cast(?SERVER,{remote_open,Channel,Fetcher,ID}).
+remote_close(Channel,ID)->
+	Fetcher = self(),
+	gen_server:cast(?SERVER,{remote_close,Channel,Fetcher,ID}).
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -47,7 +58,7 @@ channel_close(Pid,Channel)->
 %% @end
 %%--------------------------------------------------------------------
 start_link() ->
-	gen_server:start_link(?MODULE, [], []).
+	gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -64,10 +75,14 @@ start_link() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->   
-	Sockets = ets:new(sockets, [ordered_set,private]),
+init([]) ->
+	Workers = queue:new(),
+  Waiting = queue:new(),
+  Monitors = ets:new(monitors, [private]),
   State = #state{
-  	sockets = Sockets
+  	workers = Workers,
+  	waiting = Waiting,
+  	monitors = Monitors
   },
 	{ok, State}.
 
@@ -85,8 +100,6 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-
-
 handle_call(_Request, _From, State) ->
 	Reply = ok,
 	{reply, Reply, State}.
@@ -102,58 +115,67 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({client_open,Channel,ID,Address,Port},State)->
-	#state{sockets = Sockets}  = State,
-	Addr = erlang:binary_to_list(Address),
-	try
-		Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
-		case Result of
-  		{ok, TargetSocket} ->
-    		ets:insert(Sockets, {TargetSocket,{Channel,ID}}),
-    		princess_queue:remote_open(Channel,ID),
-    		ranch_tcp:setopts(TargetSocket, [{active, once}]),
-   			{noreply, State};
-    	{error, Error} ->
-      	princess_queue:remote_close(Channel,ID),
-      	{noreply, State}
-  	end
-  catch
-  	_:_Reason ->
-  		princess_queue:remote_close(Channel,ID),
-  		{noreply, State}
-  end;
-
-handle_cast({transfer_to_fetcher,Channel,ID,Bin},State)->
-	#state{sockets = Sockets}  = State,
-	case ets:match_object(Sockets,{'_',{Channel,ID}}) of
-		[{Socket,{Channel,ID}}] ->
-			ranch_tcp:send(Socket,Bin),
-			{noreply, State};
-    [] ->
-    	princess_queue:remote_close(Channel,ID),
-	  	{noreply, State}
+	#state{
+		workers = Workers,
+		monitors = Monitors
+	} = State,
+	case queue:out(Workers) of
+		{{value, Fetcher}, Left} ->
+			Ref = erlang:monitor(process, Channel),
+			true = ets:insert(Monitors, {Ref,Channel,ID,Fetcher}),
+			princess_fetcher:client_open(Fetcher,Channel,ID,Address,Port),
+			{noreply,State#state{workers = Left}};
+		{empty, Empty} ->
+			Ref = erlang:monitor(process,Channel),
+			Waiting = queue:in({Channel,Ref,{ID,Address,Port}},State#state.waiting),
+			{noreply, State#state{workers = Empty,waiting = Waiting}}
 	end;
 
 handle_cast({client_close,Channel,ID},State)->
-	#state{sockets = Sockets}  = State,
-	case ets:match_object(Sockets,{'_',{Channel,ID}}) of
-		[{Socket,{Channel,ID}}] ->
-			ets:delete(Sockets,Socket),
-			ranch_tcp:close(Socket),
-			{noreply, State};
+	#state{
+		monitors = Monitors
+	} = State,
+	case ets:match_object(Monitors,{'_',Channel,ID,'_'}) of
+		[{Ref,Channel,ID,Fetcher}] ->
+    	true = ets:delete(Monitors, Ref),
+    	erlang:demonitor(Ref),
+    	princess_fetcher:client_close(Fetcher,Channel,ID),
+    	handle_checkin(Fetcher,State);
+    []->
+    	Fun = fun ({{C, R},{I,_,_}})->
+    			case C =/= Channel of
+    				true ->
+    					true;
+    				false ->
+    					case I =/= ID of
+    						true ->
+    							true;
+    						false ->
+    							erlang:demonitor(R),
+    							false
+    					end
+    			end
+    		end,
+    	Waiting = queue:filter(Fun,State#state.waiting),
+    	{noreply, State#state{waiting = Waiting}}
+    end;
+handle_cast({remote_open,Channel,Fetcher,ID},State)->
+	magic_protocol:remote_open(Channel,Fetcher,ID),
+	handle_checkin(Fetcher,State);
+handle_cast({remote_close,Channel,Fetcher,ID},State)->
+	#state{
+		monitors = Monitors
+	} = State,
+	case ets:match_object(Monitors,{'_',Channel,ID,'_'}) of
+		[{Ref,Channel,ID,Fetcher}] ->
+    	true = ets:delete(Monitors, Ref),
+    	erlang:demonitor(Ref),
+    	magic_protocol:remote_close(Channel,Fetcher,ID),
+    	handle_checkin(Fetcher,State);
     [] ->
-	  	{noreply, State}
-	end;
-
-handle_cast({channel_close,Channel},State) -> 
-	#state{sockets = Sockets}  = State,
-	case ets:match_object(Sockets,{'_',{Channel,'_'}}) of
-		[] ->
-			{noreply,State};
-		Any ->
-			channel_loop_close(Any,Sockets),
-  		{noreply, State}
+    	magic_protocol:remote_close(Channel,Fetcher,ID),
+    	State
   end;
-
 handle_cast(_Msg, State) ->
 	{noreply, State}.
 
@@ -167,30 +189,17 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({tcp, Socket, Bin},State)->
- 	ranch_tcp:setopts(Socket, [{active, false}]),
- 	#state{sockets = Sockets}  = State,
-	case ets:match_object(Sockets,{Socket,'_'}) of
-		[{Socket,{Channel,ID}}] ->
-	  	princess_queue:transfer_to_channel(Channel,ID,Bin),
-	  	ranch_tcp:setopts(Socket, [{active, once}]),
-			{noreply, State};
-    [] ->
-    	ranch_tcp:close(Socket),
-	  	{noreply, State}
-	end;
 
-handle_info({tcp_closed, Socket},State) ->
-	#state{sockets = Sockets}  = State,
-	case ets:match_object(Sockets,{Socket,'_'}) of
-		[{Socket,{Channel,ID}}] ->
-			ets:delete(Sockets,Socket),
-	  	princess_queue:remote_close(Channel,ID),
-			{noreply, State};
+handle_info({'DOWN', Ref, _, _, _}, State) ->
+	case ets:match_object(State#state.monitors, {Ref, '_','_','_'}) of
+  	[{_,Channel,_ID,Fetcher}] ->
+    	true = ets:delete(State#state.monitors, Ref),
+    	princess_fetcher:channel_close(Fetcher,Channel),
+      {noreply,State};
     [] ->
-	  	{noreply, State}
-	end;
-
+    	Waiting = queue:filter(fun ({{_, R},_}) -> R =/= Ref end, State#state.waiting),
+      {noreply, State#state{waiting = Waiting}}
+  end;
 handle_info(_Info, State) ->
 	{noreply, State}.
 
@@ -222,10 +231,23 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-channel_loop_close([],_Sockets)->
-	ok;
-channel_loop_close([H|T],Sockets)->
-	{Socket,{_Channel,_ID}} = H,
-	ets:delete(Sockets,Socket),
-	ranch_tcp:close(Socket),
-	channel_loop_close(T,Sockets).
+handle_checkin(Fetcher, State) ->
+	#state{
+  	waiting = Waiting,
+    monitors = Monitors
+  } = State,
+  
+  case queue:out(Waiting) of
+  	{{value, {{Channel,Ref}, {ID,Address,Port}}}, Left} ->
+      true = ets:insert(Monitors, {Ref,Channel,ID,Fetcher}),
+      princess_fetcher:client_open(Fetcher,Channel,ID,Address,Port),
+      State#state{waiting = Left};
+    {empty, Empty} ->
+    	case queue:member(Fetcher,State#state.workers) of
+    		true ->
+    			State;
+    		false->
+      		Workers = queue:in(Fetcher,State#state.workers),
+      		State#state{workers = Workers, waiting = Empty}
+      end
+  end.

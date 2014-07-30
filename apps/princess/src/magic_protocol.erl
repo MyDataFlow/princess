@@ -16,19 +16,21 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
--export([remote_close/2,to_fog/3]).
+-export([remote_open/3,remote_close/3]).
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 60000).
 
 -record(state, {
+	fetchers,
+	queues,
 	socket,
 	transport,
 	buff
 	}).
-remote_close(Pid,ID)->
-	gen_server:cast(Pid,{remote_close,ID}).
-to_fog(Pid,ID,Bin)->
-	gen_server:cast(Pid,{to_fog,ID,Bin}).
+remote_open(Pid,Fetcher,ID)->
+	gen_server:cast(Pid,{remote_open,Fetcher,ID}).
+remote_close(Pid,Fetcher,ID)->
+	gen_server:cast(Pid,{remote_close,Fetcher,ID}).
 
 %%%===================================================================
 %%% API
@@ -43,7 +45,6 @@ to_fog(Pid,ID,Bin)->
 %%--------------------------------------------------------------------
 start_link(ListenerPid, Socket, Transport, _Opts) ->
 	{ok,Pid} = gen_server:start_link(?MODULE, [], []),
-	lager:log(info,?MODULE,"start_link ~n"),
 	set_socket(Pid,ListenerPid,Socket,Transport),
 	{ok,Pid}.
 
@@ -64,6 +65,8 @@ start_link(ListenerPid, Socket, Transport, _Opts) ->
 %%--------------------------------------------------------------------
 init([]) ->
 	State = #state{
+		fetchers = ets:new(fetchers, [ordered_set,private]),
+		queues = ets:new(queues,[ordered_set,private]),
 		socket = undefined,
 		transport = undefined,
 		buff = <<>>
@@ -105,13 +108,44 @@ handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->
 	ok = Transport:setopts(Socket, [{active, once}, binary]),
 	NewState = State#state{socket = Socket,transport = Transport},
 	{noreply,NewState};
+handle_cast({remote_open,Fetcher,ID},#state{fetchers = Fetchers,queues = Q} = State)->
+	case ets:lookup(Fetchers,ID) of
+		[{ID,Fetcher}]->
+			case ets:lookup(Q,ID) of
+				[] ->
+					ok;
+				[Cmds] ->
+					RCmds = lists:reverse(Cmds),
+					Fun = fun(Cmd)->
+						princess_queue:transfer_to_fetcher(Fetcher,Cmd)
+					end,
+					lists:foreach(Fun,RCmds),
+					ets:delete(Q,{ID,[]})
+			end;
+		[] ->
+			ets:insert(Fetchers,{ID,Fetcher})
+	end,
+	{noreply,State};
 
-handle_cast({remote_close,ID},#state{socket = Socket,transport = Transport} = State)->
+handle_cast({remote_close,Fetcher,ID},State)->
+	#state{fetchers = Fetchers,queues = Q,socket = Socket,transport = Transport} = State,
+	case ets:lookup(Fetchers,ID) of
+		[{ID,Fetcher}]->
+			ets:delete(Fetchers,ID),
+			case ets:lookup(Q,ID) of
+				[] ->
+					ok;
+				[_Any]->
+					ets:delete(Q,ID)
+			end;
+		[] ->
+			ok
+	end,
 	Packet = pack(ID,3,<<>>),
 	Transport:send(Socket,Packet),
 	{noreply,State};
 	
-handle_cast({to_fog,ID,Bin},#state{socket = Socket,transport = Transport} = State)->
+handle_cast({transfer_to_channel,_Fetcher,ID,Bin},#state{socket = Socket,transport = Transport} = State)->
 	Packet = pack(ID,2,Bin),
 	Transport:send(Socket,Packet),
 	{noreply,State};
@@ -132,7 +166,7 @@ handle_info({ssl, Socket, Bin},#state{socket = Socket,transport = Transport,buff
   % Flow control: enable forwarding of next TCP message
   ok = Transport:setopts(Socket, [{active, false}]),
   {Packet,NewBuff} = unpack(<<Buff/bits,Bin/bits>>,[]),
-  packet(Packet,Socket,Transport),
+  packet(Packet,State),
   ok = Transport:setopts(Socket, [{active, once}]),
   NewState = State#state{buff = NewBuff},
   {noreply,NewState};
@@ -177,30 +211,59 @@ code_change(_OldVsn, State, _Extra) ->
 set_socket(Client,ListenerPid,Socket,Transport) ->
 	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
 
-packet([],_Socket,_Transport)->
+packet([],_State)->
 	ok;
-packet([<<0:64/integer,0:32/integer>>|T],Socket,Transport)->
-	lager:log(info,?MODULE,"ping ~n"),
+
+packet([<<0:64/integer,0:32/integer>>|T],State)->
+	#state{socket = Socket,transport = Transport} = State,
 	Data = pack(0,0,<<>>),
 	Transport:send(Socket,Data),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],Socket,Transport)->
+	packet(T,State);
+
+packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],State)->
 	<<AddrLen:32/big,Rest2/bits>> = Rest,
 	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
-	Pid = self(),
 	lager:log(info,?MODULE,"fetch id:~p Addr:~p, Port:~p~n",[ID,Addr,Port]),
-	princess_fetcher:fetch(Pid,ID,Addr,Port),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],Socket,Transport)->
-	Pid = self(),
+	princess_queue:client_open(ID,Addr,Port),
+	packet(T,State);
+
+packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],State)->
 	lager:log(info,?MODULE,"more data id:~p Data:~p~n",[ID,Rest]),
-	princess_fetcher:to_free(Pid,ID,Rest),
-	packet(T,Socket,Transport);
-packet([<<ID:64/integer,3:32/integer,_Rest/bits>>|T],Socket,Transport)->
-	Pid = self(),
+	Q = State#state.queues,
+	Fetchers = State#state.fetchers,
+	case ets:lookup(Fetchers,ID) of
+		[{ID,Fetcher}]->
+			princess_queue:transfer_to_fetcher(Fetcher,ID,Rest);
+		[]->	
+			case ets:lookup(Q,ID) of
+				[] ->
+					NewCmds = [Rest],
+					ets:insert(Q,{ID,NewCmds});
+				[Cmds] ->
+					NewCmds = [Rest | Cmds],
+					ets:insert(Q,{ID,NewCmds})
+			end
+	end,
+	packet(T,State);
+
+packet([<<ID:64/integer,3:32/integer,_Rest/bits>>|T],State)->
 	lager:log(info,?MODULE,"close id:~p~n",[ID]),
-	princess_fetcher:client_close(Pid,ID),
-	packet(T,Socket,Transport).
+	princess_queue:client_close(ID),
+	Q = State#state.queues,
+	Fetchers = State#state.fetchers,
+	case ets:lookup(Fetchers,ID) of
+		[{ID,_Fetcher}]->
+			ets:delete(Fetchers,ID);	
+		[] ->
+			case ets:lookup(Q,ID) of
+				[] ->
+					ok;
+				[_Cmds] ->
+					ets:delete(Q,ID)
+			end
+	end,
+
+	packet(T,State).
 
 pack(ID,OP,Data)->
 	lager:log(info,?MODULE,"id:~p op:~p~n",[ID,OP]),
