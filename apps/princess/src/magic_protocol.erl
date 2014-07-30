@@ -114,7 +114,7 @@ handle_cast({remote_open,Fetcher,ID},#state{fetchers = Fetchers,queues = Q} = St
 			case ets:lookup(Q,ID) of
 				[] ->
 					ok;
-				[Cmds] ->
+				Cmds ->
 					RCmds = lists:reverse(Cmds),
 					Fun = fun(Cmd)->
 						princess_queue:transfer_to_fetcher(Fetcher,Cmd)

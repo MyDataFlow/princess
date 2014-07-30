@@ -21,6 +21,8 @@
 -export([remote_open/2,remote_close/2]).
 -export([transfer_to_channel/3,transfer_to_fetcher/3]).
 
+-export([checkin/1]).
+
 -define(SERVER, ?MODULE).
 
 -record(state, {
@@ -50,6 +52,9 @@ remote_open(Channel,ID)->
 remote_close(Channel,ID)->
 	Fetcher = self(),
 	gen_server:cast(?SERVER,{remote_close,Channel,Fetcher,ID}).
+
+checkin(Fetcher)->
+  gen_server:cast(?SERVER,{checkin,Fetcher}).
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -76,6 +81,7 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+  process_flag(trap_exit, true),
 	Workers = queue:new(),
   Waiting = queue:new(),
   Monitors = ets:new(monitors, [private]),
@@ -114,6 +120,10 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast({checkin,Fetcher},State)->
+  erlang:link(Fetcher),
+  NewState = handle_checkin(Fetcher,State),
+  {noreply,NewState};
 handle_cast({client_open,Channel,ID,Address,Port},State)->
 	#state{
 		workers = Workers,
@@ -140,7 +150,8 @@ handle_cast({client_close,Channel,ID},State)->
     	true = ets:delete(Monitors, Ref),
     	erlang:demonitor(Ref),
     	princess_fetcher:client_close(Fetcher,Channel,ID),
-    	handle_checkin(Fetcher,State);
+    	NewState = handle_checkin(Fetcher,State),
+      {noreply,NewState};
     []->
     	Fun = fun ({{C, R},{I,_,_}})->
     			case C =/= Channel of
@@ -161,7 +172,8 @@ handle_cast({client_close,Channel,ID},State)->
     end;
 handle_cast({remote_open,Channel,Fetcher,ID},State)->
 	magic_protocol:remote_open(Channel,Fetcher,ID),
-	handle_checkin(Fetcher,State);
+  NewState = handle_checkin(Fetcher,State),
+  {noreply,NewState};
 handle_cast({remote_close,Channel,Fetcher,ID},State)->
 	#state{
 		monitors = Monitors
@@ -171,10 +183,11 @@ handle_cast({remote_close,Channel,Fetcher,ID},State)->
     	true = ets:delete(Monitors, Ref),
     	erlang:demonitor(Ref),
     	magic_protocol:remote_close(Channel,Fetcher,ID),
-    	handle_checkin(Fetcher,State);
+    	NewState = handle_checkin(Fetcher,State),
+      {noreply,NewState};
     [] ->
     	magic_protocol:remote_close(Channel,Fetcher,ID),
-    	State
+    	{noreply,State}
   end;
 handle_cast(_Msg, State) ->
 	{noreply, State}.
@@ -200,6 +213,28 @@ handle_info({'DOWN', Ref, _, _, _}, State) ->
     	Waiting = queue:filter(fun ({{_, R},_}) -> R =/= Ref end, State#state.waiting),
       {noreply, State#state{waiting = Waiting}}
   end;
+handle_info({'EXIT', Fetcher, _Reason}, State) ->
+    #state{
+      monitors = Monitors
+    } = State,
+    case ets:match_object(Monitors,{'_','_','_',Fetcher}) of
+        [] ->
+            ok;
+        Any ->
+          Fun = fun({Ref,Channel,ID,F})->
+            ets:delete(Monitors, Ref),
+            erlang:demonitor(Ref),
+            magic_protocol:remote_close(Channel,F,ID)
+          end,
+          lists:foreach(Fun,Any)
+    end,
+    case queue:member(Fetcher, State#state.workers) of
+      true ->
+        W = queue:filter(fun (P) -> P =/= Fetcher end, State#state.workers),
+        {noreply, State#state{workers = W}};
+      false ->
+        {noreply, State}
+    end;
 handle_info(_Info, State) ->
 	{noreply, State}.
 
@@ -238,7 +273,7 @@ handle_checkin(Fetcher, State) ->
   } = State,
   
   case queue:out(Waiting) of
-  	{{value, {{Channel,Ref}, {ID,Address,Port}}}, Left} ->
+  	{{value, {Channel,Ref,{ID,Address,Port}}}, Left} ->
       true = ets:insert(Monitors, {Ref,Channel,ID,Fetcher}),
       princess_fetcher:client_open(Fetcher,Channel,ID,Address,Port),
       State#state{waiting = Left};

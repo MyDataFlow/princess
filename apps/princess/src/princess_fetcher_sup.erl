@@ -1,5 +1,5 @@
 
--module(princess_sup).
+-module(princess_fetcher_sup).
 
 -behaviour(supervisor).
 
@@ -25,9 +25,13 @@ start_link() ->
 
 init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
-	QueueSup = ?CHILD(princess_queue_sup,supervisor),
-	FetcherSup = ?CHILD(princess_fetcher_sup,supervisor),
-
-	Children = [QueueSup,FetcherSup],
+	FetcherConf = princess_config:get(fetcher),
+	Count = proplists:get_value(count,FetcherConf),
+  Children = [
+		{{princess_fetcher,N},
+		 {princess_fetcher, start_link, []},
+		  permanent, 5000, worker, []}
+			|| N <- lists:seq(1, Count)],
+			
   {ok, { RestartStrategy,Children} }.
 

@@ -25,7 +25,7 @@
 		{active, once}
   ]).
 
--define(TIMEOUT,10000).
+-define(TIMEOUT,30000).
 -record(state, {
 		sockets
 	}).
@@ -47,7 +47,9 @@ channel_close(Pid,Channel)->
 %% @end
 %%--------------------------------------------------------------------
 start_link() ->
-	gen_server:start_link(?MODULE, [], []).
+	{ok,Pid} = gen_server:start_link(?MODULE, [], []),
+	princess_queue:checkin(Pid),
+	{ok,Pid}.
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -102,6 +104,7 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({client_open,Channel,ID,Address,Port},State)->
+
 	#state{sockets = Sockets}  = State,
 	Addr = erlang:binary_to_list(Address),
 	try
@@ -111,6 +114,7 @@ handle_cast({client_open,Channel,ID,Address,Port},State)->
     		ets:insert(Sockets, {TargetSocket,{Channel,ID}}),
     		princess_queue:remote_open(Channel,ID),
     		ranch_tcp:setopts(TargetSocket, [{active, once}]),
+    		lager:log(info,?MODULE,"client open id:~p Addr:~p Port:~p",[ID,Address,Port]),
    			{noreply, State};
     	{error, Error} ->
       	princess_queue:remote_close(Channel,ID),
@@ -127,6 +131,7 @@ handle_cast({transfer_to_fetcher,Channel,ID,Bin},State)->
 	case ets:match_object(Sockets,{'_',{Channel,ID}}) of
 		[{Socket,{Channel,ID}}] ->
 			ranch_tcp:send(Socket,Bin),
+			lager:log(info,?MODULE,"transfer to fetcher id:~p",[ID]),
 			{noreply, State};
     [] ->
     	princess_queue:remote_close(Channel,ID),
@@ -139,6 +144,7 @@ handle_cast({client_close,Channel,ID},State)->
 		[{Socket,{Channel,ID}}] ->
 			ets:delete(Sockets,Socket),
 			ranch_tcp:close(Socket),
+			lager:log(info,?MODULE,"client close id:~p",[ID]),
 			{noreply, State};
     [] ->
 	  	{noreply, State}
@@ -146,6 +152,7 @@ handle_cast({client_close,Channel,ID},State)->
 
 handle_cast({channel_close,Channel},State) -> 
 	#state{sockets = Sockets}  = State,
+	lager:log(info,?MODULE,"channel close channel:~p",[Channel]),
 	case ets:match_object(Sockets,{'_',{Channel,'_'}}) of
 		[] ->
 			{noreply,State};
