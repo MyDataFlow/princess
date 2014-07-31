@@ -20,6 +20,10 @@
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 60000).
 
+-define(IPV4, 16#01).
+-define(IPV6, 16#04).
+-define(DOMAIN, 16#03).
+
 -record(state, {
 	fetchers,
 	queues,
@@ -225,10 +229,16 @@ packet([<<0:64/integer,0:32/integer>>|T],State)->
 	packet(T,State);
 
 packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],State)->
-	<<AddrLen:32/big,Rest2/bits>> = Rest,
+	<<AType:8/byte,AddrLen:32/big,Rest2/bits>> = Rest,
 	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
-	lager:log(info,?MODULE,"fetch id:~p Addr:~p, Port:~p~n",[ID,Addr,Port]),
-	princess_queue:client_open(ID,Addr,Port),
+	Address = case AType of
+		?IPV4 ->
+			erlang:list_to_tuple(erlang:binary_to_list(Addr));
+		?DOMAIN ->
+			erlang:binary_to_list(Address)
+		end,
+	lager:log(info,?MODULE,"fetch id:~p Addr:~p, Port:~p~n",[ID,Address,Port]),
+	princess_queue:client_open(ID,Address,Port),
 	packet(T,State);
 
 packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],State)->

@@ -106,9 +106,8 @@ handle_call(_Request, _From, State) ->
 handle_cast({client_open,Channel,ID,Address,Port},State)->
 
 	#state{sockets = Sockets}  = State,
-	Addr = erlang:binary_to_list(Address),
 	try
-		Result = ranch_tcp:connect(Addr, Port, ?OPTIONS, ?TIMEOUT),
+		Result = ranch_tcp:connect(Address, Port, ?OPTIONS, ?TIMEOUT),
 		case Result of
   		{ok, TargetSocket} ->
     		ets:insert(Sockets, {TargetSocket,{Channel,ID}}),
