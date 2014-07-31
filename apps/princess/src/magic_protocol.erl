@@ -108,22 +108,26 @@ handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->
 	ok = Transport:setopts(Socket, [{active, once}, binary]),
 	NewState = State#state{socket = Socket,transport = Transport},
 	{noreply,NewState};
+
 handle_cast({remote_open,Fetcher,ID},#state{fetchers = Fetchers,queues = Q} = State)->
+  lager:log(info,?MODULE,"remote open id:~p",[ID]),
 	case ets:lookup(Fetchers,ID) of
 		[{ID,Fetcher}]->
+			ok;
+		[] ->
+			ets:insert(Fetchers,{ID,Fetcher}),
 			case ets:lookup(Q,ID) of
 				[] ->
 					ok;
 				Cmds ->
+					lager:log(info,?MODULE,"remote open flush cmds id:~p",[ID]),
 					RCmds = lists:reverse(Cmds),
-					Fun = fun(Cmd)->
-						princess_queue:transfer_to_fetcher(Fetcher,Cmd)
+					Fun = fun({I,C})->
+						princess_queue:transfer_to_fetcher(Fetcher,I,C)
 					end,
 					lists:foreach(Fun,RCmds),
 					ets:delete(Q,{ID,[]})
-			end;
-		[] ->
-			ets:insert(Fetchers,{ID,Fetcher})
+			end
 	end,
 	{noreply,State};
 
