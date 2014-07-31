@@ -229,7 +229,7 @@ packet([<<0:64/integer,0:32/integer>>|T],State)->
 	packet(T,State);
 
 packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],State)->
-	<<AType:8/byte,AddrLen:32/big,Rest2/bits>> = Rest,
+	<<AType:8,AddrLen:32/big,Rest2/bits>> = Rest,
 	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
 	Address = case AType of
 		?IPV4 ->
