@@ -235,14 +235,14 @@ packet([<<ID:64/integer,1:32/integer,Rest/bits>>|T],State)->
 		?IPV4 ->
 			erlang:list_to_tuple(erlang:binary_to_list(Addr));
 		?DOMAIN ->
-			erlang:binary_to_list(Address)
+			erlang:binary_to_list(Addr)
 		end,
 	lager:log(info,?MODULE,"fetch id:~p Addr:~p, Port:~p~n",[ID,Address,Port]),
 	princess_queue:client_open(ID,Address,Port),
 	packet(T,State);
 
 packet([<<ID:64/integer,2:32/integer,Rest/bits>>|T],State)->
-	lager:log(info,?MODULE,"more data id:~p Data:~p~n",[ID,Rest]),
+	lager:log(info,?MODULE,"more data id:~p",[ID]),
 	Q = State#state.queues,
 	Fetchers = State#state.fetchers,
 	case ets:lookup(Fetchers,ID) of
