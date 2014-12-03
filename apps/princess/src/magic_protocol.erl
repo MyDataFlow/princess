@@ -17,6 +17,7 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
+-export([recv_data/3]).
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 60000).
 
@@ -26,6 +27,9 @@
 	transport,
 	buff
 	}).
+
+recv_data(Pid,Channel,Bin)->
+	gen_server:cast(Pid,{recv_data,Channel,Bin}).
 
 start_link(ListenerPid, Socket, Transport, _Opts) ->
 	{ok,Pid} = gen_server:start_link(?MODULE, [], []),
@@ -51,6 +55,20 @@ handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->
 	NewState = State#state{socket = Socket,transport = Transport},
 	{noreply,NewState};
 
+handle_cast({recv_data,Channel,Bin},State)->
+	#state{
+		socket = Socket,
+		transport = Transport
+	} = State,
+	try
+		Packet = protocol_marshal:write(?RSP_DATA,Channel,Bin),	
+		Transport:send(Socket,Packet)
+	catch
+		_:_Reason ->
+  			ok
+	end,
+	{noreply,State};
+
 handle_cast(_Msg, State) ->
 	{noreply, State}.
 
@@ -68,7 +86,7 @@ handle_info({ssl_closed, Socket}, #state{socket = Socket} = State) ->
   	{stop, normal, State};
 
 handle_info(timeout,State)->
-	{stop,timeout,State};
+	{stop,normal,State};
 
 handle_info(_Info, State) ->
 	{noreply, State}.
@@ -81,6 +99,18 @@ code_change(_OldVsn, State, _Extra) ->
 
 set_socket(Client,ListenerPid,Socket,Transport) ->
 	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
+
+address(Data)->
+	<<AType:8,AddrLen:32/big,Rest2/bits>> = Data,
+	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
+	Address = case AType of
+		?IPV4 ->
+			erlang:list_to_tuple(erlang:binary_to_list(Addr));
+		?DOMAIN ->
+			erlang:binary_to_list(Addr)
+		end,
+	{Address,Port}.
+
 process([],State)->
 	State;
 process([H|T],State)->
@@ -107,4 +137,32 @@ process([H|T],State)->
 					{undefined,State}
 				end;
 		{?REQ_CONNECT,ID,Payload} ->
-			
+			{Address,Port} = address(Payload),
+			Fetcher = princess_fetcher:connect(ID,Address,Port),
+			case Fetcher of
+				undefined ->
+					Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
+					{Packet,State};
+				_ ->
+					Packet = protocol_marshal:write(?RSP_CONNECT,ID,undefined),
+					ets:insert(Fetchers,{ID,Fetcher}),
+					{Packet,State}
+				end;
+		{?REQ_CLOSE,ID,_} ->
+			case ets:match_object(Fetchers,{ID,'_'}) of
+				[] ->
+					Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
+					{Packet,State};
+				[{ID,Pid}]->
+					princess_fetcher:close(Pid),
+					{undefined,State}
+				end
+		end,
+	NewState2 = case Data of
+		undefined ->
+			NewState;
+		_ ->
+			Transport:send(Socket,Data),
+			NewState
+	end,
+	process(T,NewState2).

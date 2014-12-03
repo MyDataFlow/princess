@@ -25,8 +25,10 @@ start_link() ->
 
 init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
-	FetcherSup = ?CHILD(princess_fetcher_sup,supervisor),
-
-	Children = [FetcherSup],
+	GenConf = princess_config:get(gen),
+	GeneratorMFA = {generator_worker, start_link, [GenConf]},                                                                
+ 	GeneratorWorker = {generator_worker,GeneratorMFA,permanent,5000,worker,[]}, 
+ 	
+	Children = [GeneratorWorker],
   	{ok, { RestartStrategy,Children} }.
 

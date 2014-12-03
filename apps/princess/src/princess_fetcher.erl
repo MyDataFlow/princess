@@ -17,6 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
 
+-export([connect/3,recv_data/2,close/1]).
 
 -define(OPTIONS,
 	[binary,
@@ -30,6 +31,22 @@
 		channel,
 		socket
 	}).
+
+connect(Channel,Address,Port)->
+	Parent = self(),
+	R = start_link(),
+	case R of
+		{ok,Pid}->
+			gen_server:cast(Pid,{connect,Parent,Channel,Address,Port}),
+			Pid;
+		_->
+			undefined
+	end.
+
+recv_data(Pid,Data)->
+	gen_server:cast(Pid,{recv_data,Data}).
+close(Pid)->
+	gen_server:cast(Pid,close).
 
 start_link() ->
 	gen_server:start_link(?MODULE, [], []).
@@ -57,17 +74,16 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
     			channel = Channel,
     			socket = TargetSocket
     			},
-    		magic_protocol:connected(Parent,Channel),
    			{noreply, NewState};
     	{error, Error} ->
-   			{stop,normal,State}
+   			{stop,error,State}
   	end
   catch
   	_:_Reason ->
   		{stop,normal,State}
   end;
 
-handle_cast({data,Bin},State)->
+handle_cast({recv_data,Bin},State)->
 	#state{socket = Socket}  = State,
 	ranch_tcp:send(Socket,Bin),
 	{noreply,State};
@@ -106,7 +122,7 @@ handle_info({tcp, Socket, Bin},State)->
     {noreply, State};
 
 handle_info({tcp_closed, _Socket},State) ->
-	{stop,normal,State};
+	{stop,close,State};
 
 handle_info(_Info, State) ->
 	{noreply, State}.
