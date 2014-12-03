@@ -25,9 +25,8 @@ start_link() ->
 
 init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
-	QueueSup = ?CHILD(princess_queue_sup,supervisor),
 	FetcherSup = ?CHILD(princess_fetcher_sup,supervisor),
 
-	Children = [QueueSup,FetcherSup],
-  {ok, { RestartStrategy,Children} }.
+	Children = [FetcherSup],
+  	{ok, { RestartStrategy,Children} }.
 
