@@ -81,7 +81,7 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
   	end
   catch
   	_:_Reason ->
-  		{stop,normal,State}
+  		{stop,error,State}
   end;
 
 handle_cast({recv_data,Bin},State)->

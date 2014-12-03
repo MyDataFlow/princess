@@ -17,7 +17,7 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
--export([recv_data/3]).
+-export([recv_data/3,connect/2]).
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 60000).
 
@@ -27,8 +27,9 @@
 	transport,
 	buff
 	}).
+
 connect(Pid,Channel)->
-	gen_server:cast(Pid,{connect,Channel,Bin}).
+	gen_server:cast(Pid,{connect,Channel}).
 recv_data(Pid,Channel,Bin)->
 	gen_server:cast(Pid,{recv_data,Channel,Bin}).
 
@@ -44,6 +45,7 @@ init([]) ->
 		transport = undefined,
 		buff = <<>>
 	},
+	process_flag(trap_exit,true),
 	{ok, State}.
 
 handle_call(_Request, _From, State) ->
@@ -100,6 +102,42 @@ handle_info({ssl_closed, Socket}, #state{socket = Socket} = State) ->
 
 handle_info(timeout,State)->
 	{stop,normal,State};
+handle_info({'EXIT',Pid,normal},State) ->
+	#state{
+		fetchers = Fetchers
+	} = State,
+	case ets:match_object(Fetchers,{'_',Pid}) of
+		[] ->
+			{noreply,State};
+		[{ID,Pid}]->
+			try
+				ets:delete(ID)
+			catch
+				_:_Reason ->
+  					ok
+			end,
+			{noreply,State}
+	end;
+handle_info({'EXIT',Pid,_Reason},State) ->
+	#state{
+		fetchers = Fetchers,
+		socket = Socket,
+		transport = Transport
+	} = State,
+	case ets:match_object(Fetchers,{'_',Pid}) of
+		[] ->
+			{noreply,State};
+		[{ID,Pid}]->
+			try
+				ets:delete(ID),
+				Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),	
+				Transport:send(Socket,Packet)
+			catch
+				_:_Reason ->
+  					ok
+			end,
+			{noreply,State}
+	end;
 
 handle_info(_Info, State) ->
 	{noreply, State}.
