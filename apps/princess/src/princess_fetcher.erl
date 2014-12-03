@@ -32,7 +32,7 @@
 	}).
 
 start_link() ->
-	gen_server:start_link(?MODULE, [], []),
+	gen_server:start_link(?MODULE, [], []).
 
 init([]) ->   
 	State = #state{
@@ -69,10 +69,10 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
 
 handle_cast({data,Bin},State)->
 	#state{socket = Socket}  = State,
-	ranch_tcp:send(Socket,Bin)
+	ranch_tcp:send(Socket,Bin),
 	{noreply,State};
 
-handle_cast({close,Channel},State)->
+handle_cast(close,State)->
 	#state{socket = Socket}  = State,
 	try
 		ranch_tcp:close(Socket),
@@ -99,14 +99,13 @@ handle_info({tcp, Socket, Bin},State)->
  	ranch_tcp:setopts(Socket, [{active, false}]),
  	#state{
    		parent = Parent,
-    	channel = Channel,
-    	socket = TargetSocket
+    	channel = Channel
     	} = State,
-    magic_protocol:recv_data(Parent,Channel,Data),
+    magic_protocol:recv_data(Parent,Channel,Bin),
     ranch_tcp:setopts(Socket, [{active, once}]),
     {noreply, State};
 
-handle_info({tcp_closed, Socket},State) ->
+handle_info({tcp_closed, _Socket},State) ->
 	{stop,normal,State};
 
 handle_info(_Info, State) ->

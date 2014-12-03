@@ -1,7 +1,7 @@
 -module(binary_marshal).
 %% Public
 -export([encode/3, encode_packed/3, decode/2, decode_packed/2]).
-
+-export([next_field_num/1,skip_next_field/1]).
 -define(TYPE_VARINT, 0).
 -define(TYPE_64BIT, 1).
 -define(TYPE_STRING, 2).
@@ -212,19 +212,23 @@ next_field_num(Bytes) ->
                              {ok, binary()}.
 skip_next_field(Bytes) ->
     {{_FieldId, WireType}, Rest} = read_field_num_and_wire_type(Bytes),
-    case WireType of
+    Rest2 = case WireType of
         ?TYPE_VARINT ->
-            {_, Rest1} = decode_varint(Rest);
+            {_, Rest1} = decode_varint(Rest),
+            Rest1;
         ?TYPE_64BIT ->
-            <<_:64, Rest1/binary>> = Rest;
+            <<_:64, Rest1/binary>> = Rest,
+            Rest1;
         ?TYPE_32BIT ->
-            <<_:32, Rest1/binary>> = Rest;
+            <<_:32, Rest1/binary>> = Rest,
+            Rest1;
         ?TYPE_STRING ->
-            {_, Rest1} = decode_value(Rest, WireType, string);
+            {_, Rest1} = decode_value(Rest, WireType, string),
+            Rest1;
         _ ->
-            Rest1 = Rest
+            Rest
     end,
-    {ok, Rest1}.
+    {ok, Rest2}.
 
 %% @hidden
 -spec decode_packed_values(Bytes :: binary(),

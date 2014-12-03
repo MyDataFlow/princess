@@ -8,29 +8,30 @@ read(Data)->
 
 decode([])->
 	[];
-decode(Packets)
+decode(Packets)->
 	decode(Packets,[]).
+
 decode([],Acc)->
 	lists:reverse(Acc);
 decode([H|T],Acc)->
-	{{1,Channel},Rest} = binary_marshal:decode(H,sint64),
+	{{1,Channel},Rest0} = binary_marshal:decode(H,sint64),
 	{{2,Cmd},Rest1} = binary_marshal:decode(Rest0,sint32),
 	R = case Cmd of 
 		?REQ_PING ->
-			[{CMD,Channel,<<>>}| Acc];
+			[{Cmd,Channel,<<>>}| Acc];
 		?REQ_CHANNEL ->
-			[{CMD,Channel,<<>>}| Acc];
+			[{Cmd,Channel,<<>>}| Acc];
 		?REQ_CONNECT ->
-			{{3,Payload},Rest2} = binary_marshal:decode(Rest1,string),
-			[{CMD,Channel,Payload}| Acc];
+			{{3,Payload},_Rest2} = binary_marshal:decode(Rest1,string),
+			[{Cmd,Channel,Payload}| Acc];
 		?REQ_CLOSE ->
-			[{CMD,Channel,<<>>}| Acc]
+			[{Cmd,Channel,<<>>}| Acc]
 		end,
 	decode(T,R).
 
 unpack(Data,Acc) when byte_size(Data) < 4 ->
 	{lists:reverse(Acc),Data};
-unpack(<<Len:32/big,Payload/bits>> = Data,Acc) when Len > byte_size(PayLoad) ->
+unpack(<<Len:32/big,Payload/bits>> = Data,Acc) when Len > byte_size(Payload) ->
 	{lists:reverse(Acc),Data};
 unpack(<<Len:32/big, _/bits >> = Data, Acc) ->                                                                                                                                                                                                                                                 
 	<< _:32/big,Packet:Len/binary, Rest/bits >> = Data,

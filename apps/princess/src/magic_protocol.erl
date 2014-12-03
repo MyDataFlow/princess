@@ -19,10 +19,6 @@
 -define(SERVER, ?MODULE).
 -define(TIMEOUT, 60000).
 
--define(IPV4, 16#01).
--define(IPV6, 16#04).
--define(DOMAIN, 16#03).
-
 -record(state, {
 	fetchers,
 	socket,
@@ -48,7 +44,7 @@ handle_call(_Request, _From, State) ->
 	Reply = ok,
 	{reply, Reply, State}.
 
-handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->,
+handle_cast({socket_ready,ListenerPid, Socket,Transport},State)->
 	ranch:accept_ack(ListenerPid),
 	ok = Transport:setopts(Socket, [{active, once}, binary]),
 	NewState = State#state{socket = Socket,transport = Transport},
@@ -61,7 +57,8 @@ handle_cast(_Msg, State) ->
 handle_info({ssl, Socket, Bin},#state{socket = Socket,transport = Transport,buff = Buff} = State) ->
   % Flow control: enable forwarding of next TCP message
   ok = Transport:setopts(Socket, [{active, false}]),
-  {Cmds,NewBuff} = protocol_marshal:read(Buff),
+
+  {Cmds,NewBuff} = protocol_marshal:read(<<Buff/bits,Bin/bits>>),
   ok = Transport:setopts(Socket, [{active, once}]),
   NewState = State#state{buff = NewBuff},
   {noreply,NewState};
@@ -75,34 +72,11 @@ handle_info(timeout,State)->
 handle_info(_Info, State) ->
 	{noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the gen_server terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-	lager:log(info,?MODULE,"stop"),
 	ok.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
 	{ok, State}.
 
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
 set_socket(Client,ListenerPid,Socket,Transport) ->
 	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
