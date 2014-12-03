@@ -7,6 +7,7 @@
 %%% Created : 29 Jul 2014 by David Alpha Fox <>
 %%%-------------------------------------------------------------------
 -module(magic_protocol).
+-include("priv/protocol.hrl").
 
 -behaviour(gen_server).
 
@@ -57,11 +58,11 @@ handle_cast(_Msg, State) ->
 handle_info({ssl, Socket, Bin},#state{socket = Socket,transport = Transport,buff = Buff} = State) ->
   % Flow control: enable forwarding of next TCP message
   ok = Transport:setopts(Socket, [{active, false}]),
-
   {Cmds,NewBuff} = protocol_marshal:read(<<Buff/bits,Bin/bits>>),
+  NewState = process(Cmds,State),
   ok = Transport:setopts(Socket, [{active, once}]),
-  NewState = State#state{buff = NewBuff},
-  {noreply,NewState};
+  NewState1 = NewState#state{buff = NewBuff},
+  {noreply,NewState1};
 
 handle_info({ssl_closed, Socket}, #state{socket = Socket} = State) ->
   	{stop, normal, State};
@@ -80,3 +81,30 @@ code_change(_OldVsn, State, _Extra) ->
 
 set_socket(Client,ListenerPid,Socket,Transport) ->
 	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
+process([],State)->
+	State;
+process([H|T],State)->
+	#state{
+		fetchers = Fetchers,
+		socket = Socket,
+		transport = Transport
+		} = State,
+	{Data,NewState} = case H of
+		{?REQ_PING,_,_}->
+			Packet = protocol_marshal:write(?RSP_PONG,undefined,undefined),
+			{Packet,State};
+		{?REQ_CHANNEL,_,_} ->
+			Channel = generator_worker:gen_id(),
+			Packet = protocol_marshal:write(?RSP_CHANNEL,undefined,Channel),
+			{Packet,State};
+		{?REQ_DATA,ID,Payload} ->
+			case ets:match_object(Fetchers,{ID,'_'}) of
+				[] ->
+					Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
+					{Packet,State};
+				[{ID,Pid}]->
+					princess_fetcher:recv_data(Pid,Payload),
+					{undefined,State}
+				end;
+		{?REQ_CONNECT,ID,Payload} ->
+			

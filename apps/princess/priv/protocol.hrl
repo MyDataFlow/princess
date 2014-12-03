@@ -12,3 +12,7 @@
 -define(RSP_CONNECT,2).
 -define(RSP_DATA,3).
 -define(RSP_CLOSE,4).
+
+-define(IPV4, 16#01).
+-define(IPV6, 16#04).
+-define(DOMAIN, 16#03).

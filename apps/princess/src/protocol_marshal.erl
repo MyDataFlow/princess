@@ -24,6 +24,9 @@ decode([H|T],Acc)->
 		?REQ_CONNECT ->
 			{{3,Payload},_Rest2} = binary_marshal:decode(Rest1,string),
 			[{Cmd,Channel,Payload}| Acc];
+		?REQ_DATA ->
+			{{3,Payload},_Rest2} = binary_marshal:decode(Rest1,string),
+			[{Cmd,Channel,Payload}| Acc];
 		?REQ_CLOSE ->
 			[{Cmd,Channel,<<>>}| Acc]
 		end,
@@ -44,7 +47,7 @@ write(?RSP_PONG,_,_)->
 write(?RSP_CHANNEL,_,Data)->
 	ID = binary_marshal:encode(1,?CMD_CHANNEL,sint64),
 	Cmd = binary_marshal:encode(2,?RSP_CHANNEL,sint32),
-	Payload = binary_marshal:encode(3,Data,string),
+	Payload = binary_marshal:encode(3,Data,sint64),
 	pack(ID,Cmd,Payload);
 write(?RSP_CONNECT,Channel,_)->
 	ID = binary_marshal:encode(1,Channel,sint64),
