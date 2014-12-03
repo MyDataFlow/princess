@@ -27,7 +27,8 @@
 	transport,
 	buff
 	}).
-
+connect(Pid,Channel)->
+	gen_server:cast(Pid,{connect,Channel,Bin}).
 recv_data(Pid,Channel,Bin)->
 	gen_server:cast(Pid,{recv_data,Channel,Bin}).
 
@@ -68,7 +69,19 @@ handle_cast({recv_data,Channel,Bin},State)->
   			ok
 	end,
 	{noreply,State};
-
+handle_cast({connect,Channel},State)->
+	#state{
+		socket = Socket,
+		transport = Transport
+	} = State,
+	try
+		Packet = protocol_marshal:write(?RSP_CONNECT,Channel,undefined),	
+		Transport:send(Socket,Packet)
+	catch
+		_:_Reason ->
+  			ok
+	end,
+	{noreply,State};
 handle_cast(_Msg, State) ->
 	{noreply, State}.
 

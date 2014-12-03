@@ -46,7 +46,7 @@ connect(Channel,Address,Port)->
 recv_data(Pid,Data)->
 	gen_server:cast(Pid,{recv_data,Data}).
 close(Pid)->
-	gen_server:cast(Pid,close).
+	gen_server:cast(Pid,{close}).
 
 start_link() ->
 	gen_server:start_link(?MODULE, [], []).
@@ -74,6 +74,7 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
     			channel = Channel,
     			socket = TargetSocket
     			},
+    		magic_protocol:connect(Parent,Channel),
    			{noreply, NewState};
     	{error, Error} ->
    			{stop,error,State}
@@ -88,7 +89,7 @@ handle_cast({recv_data,Bin},State)->
 	ranch_tcp:send(Socket,Bin),
 	{noreply,State};
 
-handle_cast(close,State)->
+handle_cast({close},State)->
 	#state{socket = Socket}  = State,
 	try
 		ranch_tcp:close(Socket),
