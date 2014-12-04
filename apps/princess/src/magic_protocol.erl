@@ -202,8 +202,8 @@ process([H|T],State)->
 		{?REQ_CLOSE,ID,_} ->
 			case ets:match_object(Fetchers,{ID,'_'}) of
 				[] ->
-					Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
-					{Packet,State};
+					%Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
+					{undefined,State};
 				[{ID,Pid}]->
 					princess_fetcher:close(Pid),
 					{undefined,State}
