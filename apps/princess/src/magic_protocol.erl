@@ -124,12 +124,13 @@ handle_info({'EXIT',Pid,_Reason},State) ->
 		socket = Socket,
 		transport = Transport
 	} = State,
+	io:format("handle close~n"),
 	case ets:match_object(Fetchers,{'_',Pid}) of
 		[] ->
 			{noreply,State};
 		[{ID,Pid}]->
 			try
-				ets:delete(ID),
+				ets:delete(Fetchers,ID),
 				Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),	
 				Transport:send(Socket,Packet)
 			catch
@@ -152,8 +153,8 @@ set_socket(Client,ListenerPid,Socket,Transport) ->
 	gen_server:cast(Client, {socket_ready,ListenerPid, Socket,Transport}).
 
 address(Data)->
-	<<AType:8,AddrLen:32/big,Rest2/bits>> = Data,
-	<<Addr:AddrLen/binary,Port:16/big>> = Rest2,
+	<<AType:8,AddrLen:32/big,Rest/bits>> = Data,
+	<<Addr:AddrLen/binary,Port:16/big>> = Rest,
 	Address = case AType of
 		?IPV4 ->
 			erlang:list_to_tuple(erlang:binary_to_list(Addr));
@@ -195,6 +196,7 @@ process([H|T],State)->
 					Packet = protocol_marshal:write(?RSP_CLOSE,ID,undefined),
 					{Packet,State};
 				_ ->
+					link(Fetcher),
 					Packet = protocol_marshal:write(?RSP_CONNECT,ID,undefined),
 					ets:insert(Fetchers,{ID,Fetcher}),
 					{Packet,State}

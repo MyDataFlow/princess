@@ -74,6 +74,7 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
     			channel = Channel,
     			socket = TargetSocket
     			},
+
     		magic_protocol:connect(Parent,Channel),
    			{noreply, NewState};
     	{error, Error} ->
@@ -85,7 +86,7 @@ handle_cast({connect,Parent,Channel,Address,Port},State)->
   end;
 
 handle_cast({recv_data,Bin},State)->
-	#state{socket = Socket}  = State,
+	#state{channel = Channel,socket = Socket}  = State,
 	ranch_tcp:send(Socket,Bin),
 	{noreply,State};
 
