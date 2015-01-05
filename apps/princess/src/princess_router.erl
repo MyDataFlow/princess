@@ -16,42 +16,40 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
--export([route_to_acceptor/2,route_to_worker/2,register_route/3,unregister_route/1]).
+-export([route/2,register_route/1,unregister_route/1]).
 
 -define(SERVER, ?MODULE).
 
--record(route, {id,acceptor,worker}).
+-record(route, {id,pid}).
 
--record(state, {monitors}).
+-record(state, {}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-route_to_acceptor(ID,Packet) ->
-    case catch do_route(ID,Packet,acceptor) of
+
+%Packet = {PacketID,PacketData}
+%ID = Client ID
+route(ID,Packet) ->
+    case catch do_route(ID,Packet) of
 	{'EXIT', Reason} ->
 		lager:log(error,?MODULE,"~p~nwhen processing: ~p",
 		       [Reason, {ID, Packet}]);
 	_ ->
 	    ok
     end.
-route_to_worker(ID,Packet) ->
-    case catch do_route(ID,Packet,worker) of
-	{'EXIT', Reason} ->
-		lager:log(error,?MODULE,"~p~nwhen processing: ~p",
-		       [Reason, {ID, Packet}]);
-	_ ->
-	    ok
-    end.
-register_route(ID,Acceptor,Worker)->
+
+register_route(ID)->
+	Pid = self(),
 	F = fun () ->
-		mnesia:write(#route{id = ID, acceptor = Acceptor,
-						worker = Worker})
+		mnesia:write(#route{id = ID, pid = Pid })
 		end,
 	mnesia:transaction(F).
+
 unregister_route(ID)->
+	Pid = self(),
 	F = fun () ->
-		case mnesia:match_object(#route{id = ID,_ = '_', _ = '_'}) of
+		case mnesia:match_object(#route{id = ID,pid = Pid}) of
 			[R] -> 
 				mnesia:delete_object(R);
 			_ -> ok
@@ -85,18 +83,16 @@ start_link() ->
 %%--------------------------------------------------------------------
 init([]) ->
     mnesia:create_table(route,
-			[{ram_copies, [node()]},
+			[{ram_copies, [node()]},{type, bag},
 			 {attributes, record_info(fields, route)}]),
     mnesia:add_table_copy(route, node(), ram_copies),
     mnesia:subscribe({table, route, simple}),
-    lists:foreach(fun (R) -> 
-    		erlang:monitor(process, R#route.acceptor),
-    		erlang:monitor(process, R#route.worker)
+  	lists:foreach(fun (Pid) -> 
+  			erlang:monitor(process, Pid)
 		  end,
 		  mnesia:dirty_select(route,
-				      [{{route, '_', '_', '_'}, [], ['$_']}])),
-    Monitors = dict:new(),
-	{ok, #state{monitors = Monitors}}.
+				      [{{route, '_', '$1'}, [], ['$1']}])),
+	{ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -140,35 +136,21 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 
-handle_info({mnesia_table_event,{write, #route{id = ID,acceptor = Acceptor,worker = Worker}, _ActivityId}},
+handle_info({mnesia_table_event,{write, #route{id = _ID,pid = Pid}, _ActivityId}},
 	    State) ->
-    M = State#state.monitors,
-    M1 = hm_misc:monitor_dict(Acceptor,M),
-    M2 = hm_misc:monitor_dict(Worker,M1),
-    {noreply, State#state{monitors = M2}};
+	erlang:monitor(process, Pid),
+    {noreply, State#state{}};
 
 handle_info({'DOWN', _Ref, _Type, Pid, _Info}, State) ->
-	M = State#state.monitors,
-	M1 = hm_misc:demonitor_dict(Pid),
+
     F = fun () ->
-		Es = mnesia:select(route,
-				   [{#route{acceptor = Pid, _ = '_'}, [], ['$_']}]),
+		Es = mnesia:select(route,[{#route{_='_',pid = Pid},[],['$_']}]),
 		lists:foreach(fun (E) ->
-						ID = E#route.id,
-						Worker = E#route.worker,
-						princess_worker:acceptor_down(Worker,ID),
 						mnesia:delete_object(E)
-			      end,Es),
-		Es2 = mnesia:select(route,[{#route{_='_',worker = Pid},[],['$_']}]),
-		lists:foreach(fun (E2) ->
-						ID = E2#route.id,
-						Acceptor = E2#route.acceptor,
-						princess_acceptor:worker_down(Acceptor,ID),
-						mnesia:delete_object(E2)
-			      end,Es2)
+			      end,Es)
 	end,
     mnesia:transaction(F),
-    {noreply, State#state{monitors = M1}};
+    {noreply, State};
 handle_info(_Info, State) ->
 	{noreply, State}.
 
@@ -200,14 +182,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-do_route(ID,Packet,Direct) ->
-	case {mnesia:dirty_read(route, ID),Direct} of
-	    {[],_} -> 
-	    	ok;
-	    {[R],acceptor} ->
-	    	Acceptor = R#route.acceptor,
-	    	princess_acceptor:packet(Acceptor,{ID,Packet});
-	    {[R],worker} ->
-	    	Worker = R#route.worker,
-	    	princess_worker:packet(Worker,{ID,Packet})
+do_route(ID,Packet) ->
+	case mnesia:dirty_read(route, ID) of
+	   [] ->
+	   		ok;
+	   [R] ->
+	   		Pid = R#route.pid,
+	   		princess_acceptor:packet(Pid,Packet);
+	   Rs ->
+	   		Pids = lists:foldl(
+	   			fun(E,Acc)->
+	   				Pid = E#route.pid,
+	   				[Pid|Acc]
+	   			end,[],Rs),
+	   		Pid = hm_process:least_busy_pid(Pids),
+	   		princess_acceptor:packet(Pid,Packet)
     end.
