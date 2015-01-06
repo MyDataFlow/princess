@@ -26,26 +26,26 @@ princess_encode(ID,Cmd,Data)->
 decode(Context,Data)->
 	Remain = Context#princess_codec_context.remain,
 	NewData = <<Remain/bits,Data/bits>>,
-	{ok,Buff,RemainData} = princess_decode(Data,[]),
+	{ok,Buff,RemainData} = princess_decode(NewData,[]),
 	{ok,Buff,Context#princess_codec_context{remain = RemainData}}.
 
 princess_decode(Data,Acc)->
 	R = try
 		{{1,ID},Rest0} = binary_marshal:decode(Data,sint64),
 		{{2,Cmd},Rest1} = binary_marshal:decode(Rest0,sint32),
-		{{3,Data},Rest2} = binary_marshal:decode(Rest1,bytes),
+		{{3,Content},Rest2} = binary_marshal:decode(Rest1,bytes),
 		{Rest2,#princess_command{
-			id = ID,
-			cmd = Cmd,
-			data = Data
-		}}
+				id = ID,
+				cmd = Cmd,
+				data = Content
+			}}
 	catch 
-        _:Reason ->
-            {ok,lists:reverse(Acc),Data}
+        _:_Reason ->
+        	{ok,lists:reverse(Acc),Data}
     end,
-    case R of 
-    	{ok,Acc,Data}->
-    		{ok,Acc,Data};
-    	{Rest,Command} ->
+    case R of
+    	{ok,NewAcc,Data}->
+    		{ok,NewAcc,Data};
+    	{Rest,Command}->
     		princess_decode(Rest,[Command|Acc])
     end.

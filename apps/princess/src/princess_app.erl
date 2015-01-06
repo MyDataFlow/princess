@@ -3,6 +3,7 @@
 -behaviour(application).
 %% Application callbacks
 -export([start/2, stop/1]).
+-export([princess_pipe/0]).
 
 %% ===================================================================
 %% Application callbacks
@@ -39,3 +40,10 @@ start_listener()->
 	{ok, _} = ranch:start_listener(princess,AcceptorWorker,
                 ranch_ssl, TransOpts, magic_protocol,[]),
 	ranch:set_max_connections(princess,MaxWorker).
+
+princess_pipe()->
+	{ok,Pipe} = codec_pipeline:new(),
+	{ok,PrincessCodec} = princess_codec:new(),
+	{ok,FixedLengthCodec} = fixed_length_codec:new(2,16),
+	{ok,Pipe1} = codec_pipeline:add_codec(Pipe,fixed_length_codec,FixedLengthCodec),
+	codec_pipeline:add_codec(Pipe1,princess_codec,PrincessCodec).
