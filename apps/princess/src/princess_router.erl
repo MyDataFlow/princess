@@ -28,7 +28,7 @@
 %%% API
 %%%===================================================================
 
-%Packet = {PacketID,PacketData}
+%Packet = Packet Data 
 %ID = Client ID
 route(ID,Packet) ->
     case catch do_route(ID,Packet) of
@@ -188,7 +188,7 @@ do_route(ID,Packet) ->
 	   		ok;
 	   [R] ->
 	   		Pid = R#route.pid,
-	   		princess_acceptor:packet(Pid,Packet);
+	   		princess_handler:packet(Pid,Packet);
 	   Rs ->
 	   		Pids = lists:foldl(
 	   			fun(E,Acc)->
@@ -196,5 +196,5 @@ do_route(ID,Packet) ->
 	   				[Pid|Acc]
 	   			end,[],Rs),
 	   		Pid = hm_process:least_busy_pid(Pids),
-	   		princess_acceptor:packet(Pid,Packet)
+	   		princess_handler:packet(Pid,Packet)
     end.
