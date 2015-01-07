@@ -1,19 +1,11 @@
--define(UTP_STATE_CS_UNINITIALIZED,state_uninitialized).
--define(UTP_STATE_CS_IDLE,state_idle).
--define(UTP_STATE_CS_SYN_SENT,state_syn_sent).
--define(UTP_STATE_CS_CONNECTED,state_connected).
--define(UTP_STATE_CS_CONNECTED_FULL,state_connected_full).
--define(UTP_STATE_CS_GOT_FIN,state_fot_fin).
--define(UTP_STATE_CS_DESTROY_DELAY,state_destroy_delay).
--define(UTP_STATE_CS_FIN_SENT,state_fin_sent).
--define(UTP_STATE_CS_RESET,state_rest).
--define(UTP_STATE_CS_DESTROY,state_dstory).
 
 -define(UTP_DEFAULT_RTO,3000).
 -define(UTP_DEFAULT_RTT,800).
 -define(UTP_DEFAULT_PACKET_SIZE,1435).
 -define(UTP_DEFAULT_DISCOVER_TIME,30 * 60 * 1000).
 -define(UTP_DEFAULT_MTU,576).
+-define(UTP_RECV_BUFFER_MAX_SLOT,1024).
+-define(UTP_SEND_BUFFER_MAX_SLOT,1024).
 
 %NAT 29 seconds
 -define(UTP_KEEPALIVE_INTERVAL,29000).

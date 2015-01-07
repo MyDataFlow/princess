@@ -34,8 +34,7 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Args) ->
-
+start_link(Args) -
 	gen_server2:start_link(?MODULE, Args, []).
 
 %%%===================================================================
@@ -194,6 +193,7 @@ process_internal(Host,_Port,?UTP_PACKET_ST_RESET,ConnectionID,Header,Extensions,
 		{_,_,_}->
 			gen_fsm:send_event(Pid0,{?UTP_PACKET_ST_RESET,Header,Extensions,Payload})
 	end;
+	
 process_internal(Host,Port,?UTP_PACKET_ST_SYN,ConnectionID,Header,Extensions,Payload,State)->
 	Pid = lookup({Host,ConnectionID + 1},State#state.utp_sockets),
 	case Pid of

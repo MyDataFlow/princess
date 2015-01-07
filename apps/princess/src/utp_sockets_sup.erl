@@ -26,13 +26,13 @@ start_link() ->
 %% ===================================================================
 
 init([]) ->
-	RestartStrategy = {simple_one_for_one, 5, 10},
+	RestartStrategy = {simple_one_for_one, 50, 3600},
 	UTPSocketMFA = {utp_socket, start_link, []},                                                                
  	UTPSocketWorker = {utp_socket,UTPSocketMFA,temporary,5000,worker,[]}, 
 	Children = [UTPSocketWorker],
   	{ok, { RestartStrategy,Children} }.
 
-create_socket(Host,Port,Parent)->
-	{ok,Pid} = supervisor:start_child(utp_sockets_sup,[Host,Port,Parent]),
+create_socket(Host,Port,UDPSocket)->
+	{ok,Pid} = supervisor:start_child(utp_sockets_sup,[Host,Port,UDPSocket]),
 	Pid.
 

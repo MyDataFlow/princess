@@ -134,3 +134,17 @@ reset_packet(ConnectionID,AckNo)->
         ack_nr = AckNo},
     {ok,Packet} = encode(Header,[],<<"">>),
     Packet.
+
+ack_packet(ConnectionID,AckNo,SeqNo,DiffMS,WinSize,ExtList)->
+    Header = #packet_ver_one_header{ 
+        type = ?UTP_PACKET_ST_STATE,
+        version = 1,
+        extension = 0,
+        connection_id = ConnectionID,
+        timestamp_ms = utp_time:current_time_milli(),
+        timestamp_df_ms = DiffMS,
+        wnd_size = WinSize,
+        seq_nr = SeqNo,
+        ack_nr = AckNo},
+    {ok,Packet} = encode(Header,ExtList,<<"">>),
+    Packet.
