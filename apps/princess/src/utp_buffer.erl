@@ -72,6 +72,25 @@ overflow(Context)->
 	end.
 
 
+update_recv_buffer(SeqNo, Payload,
+                   #utp_buffer_context{ got_fin = true,eof_nr = SeqNo,
+                             ack_nr = SeqNo } = Context, Acc) ->
+	NewAcc = [Payload|Acc],
+    {got_fin, lists:reverse(NewAcc),
+    	Context#utp_buffer_context{ ack_nr = utp_util:bit16(SeqNo+1)}};
+update_recv_buffer(SeqNo, Payload, #utp_buffer_context{ ack_nr = SeqNo } = Context, Acc) ->
+	NewAcc = [Payload|Acc],
+    satisfy_from_recv_buffer(
+      Context#utp_buffer_context{ ack_nr = utp_util:bit16(SeqNo + 1) }, NewAcc);
+update_recv_buffer(SeqNo, Payload, Context, Acc) when is_integer(SeqNo) ->
+   R =  recv_buffer_in(SeqNo, Payload,Context),
+   case R of
+   	duplicate  ->
+   		duplicate;
+   	{ok,NewContext}->
+   		{ok,lists:reverse(Acc),NewContext}
+   end.
+
 satisfy_from_recv_buffer(#utp_buffer_context{recv_buf = [] } = Context,Acc) ->
     {ok, list:reverse(Acc),Context};
 
@@ -91,12 +110,12 @@ satisfy_from_recv_buffer(#utp_buffer_context{ ack_nr = AckNo,
 satisfy_from_recv_buffer(#utp_buffer_context{} = Context,Acc) ->
     {ok,list:reverse(Acc),Context}.
 
-recv_buffer_in(Context,Seq,Payload) ->
-    case orddict:is_key(Seq, Context#utp_buffer_context.recv_buf) of
+recv_buffer_in(Context,SeqNo,Payload) ->
+    case orddict:is_key(SeqNo, Context#utp_buffer_context.recv_buf) of
         true -> 
         	duplicate;
         false -> 
-        	RecvBuf = orddict:store(Seq,Payload,Context#utp_buffer_context.recv_buf),
+        	RecvBuf = orddict:store(SeqNo,Payload,Context#utp_buffer_context.recv_buf),
         	{ok, Context#utp_buffer_context{recv_buf= RecvBuf}}
     end.
 
