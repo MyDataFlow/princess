@@ -1,7 +1,8 @@
 -module(utp_protocol).
 
 -include("utp_packet.hrl").
--export([encode/3,decode/1,make_connection_id/0,validate/1]).
+-export([encode/3,decode/1,random_id/0,validate/1]).
+-export([reset_packet/2]).
 %-record(packet_ver_one_header,{
 %    type,
 %    version,
@@ -14,7 +15,7 @@
 %    ack_nr
 %  }).
 
-make_connection_id() ->
+random_id() ->
     <<N:16/integer>> = crypto:rand_bytes(2),
     N.
 
@@ -120,4 +121,16 @@ decode_extensions(?UTP_PACKET_EXT_BITS,
     decode_extensions(Next, Rest, [{?UTP_PACKET_EXT_BITS, ExtBits} | Acc]).
 
 
-
+reset_packet(ConnectionID,AckNo)->
+    Header = #packet_ver_one_header{ 
+        type = ?UTP_PACKET_ST_RESET,
+        version = 1,
+        extension = 0,
+        connection_id = ConnectionID,
+        timestamp_ms = 0,
+        timestamp_df_ms = 0,
+        wnd_size = 0,
+        seq_nr = random_id(),
+        ack_nr = AckNo},
+    {ok,Packet} = encode(Header,[],<<"">>),
+    Packet.

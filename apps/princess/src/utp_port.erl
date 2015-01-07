@@ -157,8 +157,11 @@ lookup(Key,Tid)->
 store({Key,Value},Tid)->
 	ets:insert(Tid,{Key,Value}).
 
-send_reset(State)->
+send_reset(Host,Port,ConnectionID,Header,State)->
+	Packet = utp_protocol:reset_packet(ConnectionID,Header#packet_ver_one_header.seq_nr),
+	gen_udp:send(State#state.udp_socket,Host,Port,Packet),
 	ok.
+
 process(Host,Port,Bin,State)->
 	R = utp_protocol:decode(Bin),
 	case R of
@@ -206,11 +209,11 @@ process_internal(Host,Port,?UTP_PACKET_ST_SYN,ConnectionID,Header,Extensions,Pay
 		_->
 			ok
 	end;
-process_internal(Host,_Port,Type,ConnectionID,Header,Extensions,Payload,State)->
+process_internal(Host,Port,Type,ConnectionID,Header,Extensions,Payload,State)->
 	Pid = lookup({Host,ConnectionID},State#state.utp_sockets),
 	case Pid of
 		undefined ->
-			send_reset(State);
+			send_reset(Host,Port,ConnectionID,Header,State);
 		_->
 			gen_fsm:send_event(Pid,{Type,Header,Extensions,Payload})
 	end.
