@@ -12,10 +12,11 @@
 -define(UTP_PACKET_ST_RESET,3).
 -define(UTP_PACKET_ST_SYN,4).
 
--define(UTP_PACKET_DEFAULT_VERSION,1).
-
 -define(UTP_PACKET_EXT_SACK, 1).
 -define(UTP_PACKET_EXT_BITS,2).
+
+-define(UTP_PACKET_VERSION,1).
+-define(UTP_PACKET_HEADR_SIZE,20).
 
 %struct PACKED_ATTRIBUTE PacketFormatV1 {
 %	// packet_type (4 high bits)

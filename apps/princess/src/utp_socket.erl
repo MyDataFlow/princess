@@ -8,6 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(utp_socket).
 -include("utp.hrl").
+-include("utp_packet.hrl").
 
 -behaviour(gen_fsm).
 
@@ -19,13 +20,36 @@
 		 handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
 
 -define(SERVER, ?MODULE).
-
+-record(utp_context,{
+		state,
+		% how much of the window is used, number of bytes in-flight
+		% packets that have not yet been sent do not count, packets
+		% that are marked as needing to be re-sent (due to a timeout)
+		% don't count either
+		cur_window,
+		last_rcv_window,
+		max_window, %maximum window size, in bytes
+		sndbuf, %UTP_SNDBUF setting, in bytes
+		rcvbuf,	%UTP_RCVBUF setting, in bytes
+		conn_seed,
+		conn_id_recv,
+		conn_id_send,
+		reply_micro,
+		eof_nr,
+		ack_nr,	%All sequence numbers up to including this have been properly received by us
+		seq_nr, %This is the sequence number for the next packet to be sent.
+		mtu_discover_time = 0,
+		mtu_floor = ?UTP_DEFAULT_MTU,
+		mtu_ceiling = 0,
+		mtu_last = 0,
+		mtu_probe_seq = 0,
+		mtu_probe_size = 0
+	}).
 -record(state, {
 		udp_pid,
 		remote_addr,
 		remote_port,
-		connetion_id,
-		current_state
+		context
 	}).
 
 %%%===================================================================
@@ -204,3 +228,45 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+mtu_search_update(Context)->
+	MTUFloor = Context#utp_context.mtu_floor,
+	MTUCeiling = Context#utp_context.mtu_ceiling,
+	MTULast = (MTUFloor + MTUCeiling) / 2,
+	if 
+		MTUCeiling - MTUFloor =< 16 ->
+			MTUDiscoverTime = ?UTP_DEFAULT_DISCOVER_TIME,
+			Context#utp_context{
+				mtu_discover_time = MTUDiscoverTime,
+				mtu_last = MTUFloor,
+				mtu_ceiling = MTUFloor,
+				mtu_probe_seq = 0,
+				mtu_probe_size = 0
+			};
+		true ->
+			Context#utp_context{
+				mtu_last = MTULast,
+				mtu_probe_seq = 0,
+				mtu_probe_size = 0
+			}
+	end.
+
+mtu_reset(Context)->
+	Context#utp_context{
+		mtu_discover_time = ?UTP_DEFAULT_DISCOVER_TIME,
+		mtu_ceiling = ?UDP_IPV4_MTU,
+		mtu_floor = ?UTP_DEFAULT_MTU
+	}.
+
+packet_size(Context)->
+	MTU = if
+		Context#utp_context.mtu_last > 0 ->
+			Context#utp_context.mtu_last;
+		true ->
+			Context#utp_context.mtu_ceiling
+		end,
+	MTU - ?UTP_PACKET_HEADR_SIZE.
+
+rcv_window(Context)->
+	Context#utp_context.rcvbuf.
+
+
