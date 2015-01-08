@@ -1,5 +1,5 @@
 
--module(princess_sup).
+-module(utp_sup).
 
 -behaviour(supervisor).
 
@@ -25,11 +25,9 @@ start_link() ->
 
 init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
-	GenConf = princess_config:get(gen),
-	GeneratorMFA = {generator_worker, start_link, [GenConf]},                                                                
- 	GeneratorWorker = {generator_worker,GeneratorMFA,permanent,5000,worker,[]}, 
- 	UTPSupMFA = {utp_sup,start_link,[]},
- 	UTPSup = {utp_sup,UTPSupMFA,permanent,5000,supervisor,[]},
-	Children = [GeneratorWorker,UTPSup],
+	ETSMFA = {utp_ets, start_link, []},                                                                
+ 	ETSWorker = {utp_ets,ETSMFA,permanent,5000,worker,[utp_ets]}, 
+ 	
+	Children = [ETSWorker],
   	{ok, { RestartStrategy,Children} }.
 
