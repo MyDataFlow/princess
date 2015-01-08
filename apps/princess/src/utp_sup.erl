@@ -27,8 +27,6 @@ init([]) ->
 	RestartStrategy = {one_for_one, 5, 10},
 	ETSMFA = {utp_ets, start_link, []},                                                                
  	ETSWorker = {utp_ets,ETSMFA,permanent,5000,worker,[utp_ets]}, 
- 	UTPSocketMFA = {utp_socket_sup,start_link,[]},
- 	UTPSocketSup = {utp_socket_sup,UTPSocketMFA,permanent,5000,supervisor,[]},
-	Children = [UTPSocketSup,ETSWorker],
+	Children = [ETSWorker],
   	{ok, { RestartStrategy,Children} }.
 

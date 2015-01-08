@@ -24,21 +24,21 @@
 -record(accept_queue,{ 
         	waittings      :: queue(),
         	incomings      :: queue(),
-        	waittings_size :: integer(),
+        	len            :: integer(),
         	backlog        :: integer() 
         }).
 
 -record(state, {
 		port,
+        udp_socket,
 		disptcher_count,
 		cur_dispatcher,
 		disptcher_sup,
-		udp_socket,
 		utp_sockets,
 		utp_socket_monitors,
+        utp_socket_sup,
 		utp_accepts,
 		utp_accept_monitors
-
 	}).
 
 %%%===================================================================
@@ -101,23 +101,26 @@ init(Args) ->
 			{ok,UDPSocket} =  gen_udp:open(Port, [binary, {active, false}]),
 			UTPSockets = ets:new(utp_sockets,[set,{read_concurrency,true},public]),
 			Pid = self(),
-			R = supervisor:start_child(utp_sup, dispatcher_sup_spec(Port,
+			R1 = supervisor:start_child(utp_sup, dispatcher_sup_spec(Port,
 				DisptcherCount,[Pid,UTPSockets,UDPSocket])),
-			case R of 
-				{ok,Sup}->
+            R2 = supervisor:start_child(utp_sup,utp_socket_sup_spec(Port)),
+			case {R1,R2} of 
+				{{ok,DisSup},{ok,USocketSup}}->
 					State = #state{
 						port = Port,
+                        udp_socket = UDPSocket,
 						disptcher_count = DisptcherCount,
 						cur_dispatcher = 1,
-						disptcher_sup = Sup,
-						udp_socket = UDPSocket,
+						disptcher_sup = DisSup,
 						utp_sockets =  UTPSockets,
 						utp_socket_monitors = gb_trees:empty(),
+                        utp_socket_sup = USocketSup,
 						utp_accepts = closed,
 						utp_accept_monitors = closed
 					},
 					{ok, State};
 				Error ->
+                    terminate_supervisor(Port),
 					{stop,Error}
 			end
 	end.
@@ -148,7 +151,7 @@ handle_call({listen, _Opts}, _From, #state { utp_accepts = #accept_queue{} } = S
 handle_call(accept, _From, #state { utp_accepts = closed } = S) ->
     {reply, {error, no_listen}, S};
 handle_call(accept, {Pid,_} = From, #state{ udp_socket = Socket,utp_socket_monitors = SMonitors,
-	utp_accepts = Q,utp_accept_monitors = AMonitors} = S) ->
+	utp_socket_sup = Sup,utp_accepts = Q,utp_accept_monitors = AMonitors} = S) ->
     {ok, Pairings, NewQ} = add_acceptor(From, Q),
     A1 = demonitor_acceptor(Pid,Pairings,AMonitors),
     NewAMonitors = case A1 of
@@ -158,7 +161,7 @@ handle_call(accept, {Pid,_} = From, #state{ udp_socket = Socket,utp_socket_monit
     				Ref = erlang:monitor(process,Pid),
     				gb_trees:enter(Pid,Ref,M)
     			end,
-	NewSMonitors = monitor_accepted(Socket,Pairings,SMonitors),
+	NewSMonitors = monitor_accepted(Sup,Socket,Pairings,SMonitors),
     {noreply, S#state { utp_accepts = NewQ,utp_socket_monitors = NewSMonitors,
                         utp_accept_monitors = NewAMonitors }};
 
@@ -177,11 +180,27 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast({incoming, _SYN}, #state { utp_accepts = closed } = S) ->
+    {noreply, S};
+handle_cast({incoming, SYN}, #state{ udp_socket = Socket,utp_socket_monitors = SMonitors,
+    utp_socket_sup = Sup,utp_accepts = Q,utp_accept_monitors = AMonitors} = S) ->
+    case add_incoming(SYN, Q) of
+        synq_full ->
+            {noreply, S};
+        duplicate ->
+            {noreply, S};
+        {ok, Pairings, NewQ} ->
+            A1 = demonitor_acceptor(undefined,Pairings,AMonitors),
+            {NewAMonitors,_} =  A1,
+            NewSMonitors = monitor_accepted(Sup,Socket,Pairings,SMonitors),
+            {noreply, S#state { utp_accepts = NewQ,utp_socket_monitors = NewSMonitors,
+                        utp_accept_monitors = NewAMonitors }}
+    end;
+
 handle_cast(close,State)->
 	Port = State#state.port,
 	Socket = State#state.udp_socket,
-	supervisor:terminate_child(utp_sup,{utp_dispatcher_sup, Port}),
-	supervisor:delete_child(utp_sup,{utp_dispatcher_sup, Port}),
+    terminate_supervisor(Port),
 	gen_udp:close(Socket),
 	{stop,normal,State};
 
@@ -276,6 +295,9 @@ dispatcher_sup_spec(Port,DisptcherCount,Opts)
 	{{utp_dispatcher_sup, Port}, {utp_dispatcher_sup, start_link, [ 
 		Port,DisptcherCount, Opts]},
 		permanent, infinity, supervisor, [utp_dispatcher_sup]}.
+utp_socket_sup_spec(Port)->
+    {{utp_socket_sup, Port}, {utp_socket_sup, start_link, []},
+        permanent, infinity, supervisor, [utp_socket_sup]}.
 
 next_one(N,Max)->
 	Next = (N + 1) rem Max,
@@ -327,31 +349,43 @@ new_acceptor_queue(Max) ->
     #accept_queue{ 
     	waittings = queue:new(),
         incomings = queue:new(),
-        waittings_size = 0,
+        len = 0,
         backlog = Max }.
 
-del_acceptor(Pid,#accept_queue{ waittings = Waittings,waittings_size = Len } = Q)->
-   NW = queue:filter(fun({APid,_}) -> APid =/= Pid end,Waittings),
-   Q#accept_queue{waittings = NW,waittings_size = Len - 1}.
+add_incoming(_SYNPacket, #accept_queue { len = Len,backlog = Max}) when Len >= Max ->
+    overflow_backlog;
+add_incoming(SYN, #accept_queue { incomings = I,len = Len} = Q ) ->
+    case queue:member(SYN, I) of
+        true ->
+            duplicate;
+        false ->
+            try_accept(
+              Q#accept_queue {
+                incomings = queue:in(SYN, I),
+                len   = Len + 1 }, [])
+    end.
 
-add_acceptor(From,#accept_queue { waittings = Waittings,waittings_size = Len } = Q) ->
-    try_accept(Q#accept_queue{waittings = queue:in(From, Waittings),
-    	waittings_size = Len + 1}, []).
+del_acceptor(Pid,#accept_queue{ waittings = Waittings} = Q)->
+   NW = queue:filter(fun({APid,_}) -> APid =/= Pid end,Waittings),
+   Q#accept_queue{waittings = NW}.
+
+add_acceptor(From,#accept_queue { waittings = Waittings} = Q) ->
+    try_accept(Q#accept_queue{waittings = queue:in(From, Waittings)}, []).
 
 try_accept(#accept_queue { waittings = Waittings,
                              incomings = Incomings,
-                             waittings_size = Len } = Q, Pairings) ->
+                              len = Len } = Q, Pairings) ->
     case {queue:out(Waittings), queue:out(Incomings)} of
         {{{value, Acceptor}, W1}, {{value, Packet}, I1}} ->
             try_accept(Q#accept_queue { waittings = W1,
-       						incomings = I1,waittings_size = Len - 1 },
+       						incomings = I1,len = Len - 1 },
                         [{Acceptor, Packet} | Pairings]);
         _ ->
             {ok, Pairings, Q} % Can't do anymore work for now
     end.
 
-accept(Socket, From, {Host,Port,SYN}) ->
-    {ok, Pid} = utp_socket_sup:create_utp_socket(Socket,Host,Port),
+accept(Sup,Socket,From, {Host,Port,SYN}) ->
+    {ok, Pid} = utp_socket_sup:create_utp_socket(Sup,Socket,Host,Port),
     %% We should register because we are the ones that can avoid
     %% the deadlock here
     %% @todo This call can in principle fail due
@@ -379,9 +413,14 @@ demonitor_acceptor(Pid,Pairings,AMonitors)->
     		end,
 	lists:foldl(Fun,{AMonitors,false},Pairings).
 
-monitor_accepted(Socket,Pairings,SMonitors)->
- Mappers = [accept(Socket, Acc, SYN) || {Acc, SYN} <- Pairings],
+monitor_accepted(Sup,Socket,Pairings,SMonitors)->
+ Mappers = [accept(Sup,Socket, Acc, SYN) || {Acc, SYN} <- Pairings],
  lists:foldl(fun({Pid, CID}, Monitors) ->
  			Ref = erlang:monitor(process, Pid),
     		gb_trees:enter(Ref, CID, Monitors)
     	end,SMonitors,Mappers).
+terminate_supervisor(Port)->
+    supervisor:terminate_child(utp_sup,{utp_socket_sup,Port}),
+    supervisor:delete_child(utp_sup,{utp_socket_sup,Port}),
+    supervisor:terminate_child(utp_sup,{utp_dispatcher_sup, Port}),
+    supervisor:delete_child(utp_sup,{utp_dispatcher_sup, Port}).
