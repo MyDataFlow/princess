@@ -2,7 +2,6 @@
 
 -include("utp_packet.hrl").
 -export([encode/3,decode/1,random_id/0,validate/1]).
--export([reset_packet/2]).
 %-record(packet_ver_one_header,{
 %    type,
 %    version,
@@ -120,31 +119,3 @@ decode_extensions(?UTP_PACKET_EXT_BITS,
     <<ExtBits:Len/binary, Rest/binary>> = R,
     decode_extensions(Next, Rest, [{?UTP_PACKET_EXT_BITS, ExtBits} | Acc]).
 
-
-reset_packet(ConnectionID,AckNo)->
-    Header = #packet_ver_one_header{ 
-        type = ?UTP_PACKET_ST_RESET,
-        version = 1,
-        extension = 0,
-        connection_id = ConnectionID,
-        timestamp_ms = 0,
-        timestamp_df_ms = 0,
-        wnd_size = 0,
-        seq_nr = random_id(),
-        ack_nr = AckNo},
-    {ok,Packet} = encode(Header,[],<<"">>),
-    Packet.
-
-ack_packet(ConnectionID,AckNo,SeqNo,DiffMS,WinSize,ExtList)->
-    Header = #packet_ver_one_header{ 
-        type = ?UTP_PACKET_ST_STATE,
-        version = 1,
-        extension = 0,
-        connection_id = ConnectionID,
-        timestamp_ms = utp_time:current_time_milli(),
-        timestamp_df_ms = DiffMS,
-        wnd_size = WinSize,
-        seq_nr = SeqNo,
-        ack_nr = AckNo},
-    {ok,Packet} = encode(Header,ExtList,<<"">>),
-    Packet.

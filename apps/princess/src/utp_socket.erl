@@ -60,8 +60,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(Host,Port,UDPSocket) ->
-	gen_fsm:start_link(?MODULE, [], [Host,Port,UDPSocket]).
+start_link(UDPSocket,Host,Port) ->
+	gen_fsm:start_link(?MODULE, [UDPSocket,Host,Port], []).
 
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -80,7 +80,7 @@ start_link(Host,Port,UDPSocket) ->
 %%                     {stop, StopReason}
 %% @end
 %%--------------------------------------------------------------------
-init([Host,Port,UDPSocket]) ->
+init([UDPSocket,Host,Port]) ->
 	MTUContext = utp_mtu:new(),
 	Context = #utp_context{utp_mtu_context = MTUContext},
 	State = #state{
@@ -214,14 +214,5 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-rcv_window(Context)->
-	Context#utp_context.rcvbuf.
-
-send(Packet,State)->
-	utp_port:send(State#state.udp_socket,State#state.remote_addr,
-		State#state.remote_port,Packet),
-	Context = State#state.context,
-	NewContext = Context#utp_context{seq_nr = Context#utp_context.seq_nr + 1},
-	State#state{context = NewContext}.
 
 

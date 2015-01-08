@@ -1,5 +1,5 @@
 
--module(utp_sockets_sup).
+-module(utp_socket_sup).
 
 -behaviour(supervisor).
 
@@ -9,7 +9,7 @@
 %% Supervisor callbacks
 -export([init/1]).
 
--export([create_socket/3]).
+-export([create_utp_socket/3]).
 
 %% Helper macro for declaring children of supervisor
 -define(CHILD(I, Type), {I, {I, start_link, []}, permanent, 5000, Type, [I]}).
@@ -32,7 +32,7 @@ init([]) ->
 	Children = [UTPSocketWorker],
   	{ok, { RestartStrategy,Children} }.
 
-create_socket(Host,Port,UDPSocket)->
-	{ok,Pid} = supervisor:start_child(utp_sockets_sup,[Host,Port,UDPSocket]),
+create_utp_socket(UDPSocket,Host,Port)->
+	{ok,Pid} = supervisor:start_child(utp_sockets_sup,[UDPSocket,Host,Port]),
 	Pid.
 

@@ -16,6 +16,17 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 		 terminate/2, code_change/3]).
+-export([listen/1,listen/2]).
+-export([accept/1,close/1]).
+
+-export([incoming/2]).
+
+-record(accept_queue,{ 
+        	waittings      :: queue(),
+        	incomings      :: queue(),
+        	waittings_size :: integer(),
+        	backlog        :: integer() 
+        }).
 
 -record(state, {
 		port,
@@ -23,12 +34,37 @@
 		cur_dispatcher,
 		disptcher_sup,
 		udp_socket,
-		utp_sockets
+		utp_sockets,
+		utp_socket_monitors,
+		utp_accepts,
+		utp_accept_monitors
+
 	}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+listen(Pid,Options) ->
+    case validate_listen_opts(Options) of
+        ok ->
+            call(Pid,{listen, Options});
+        badarg ->
+            {error, badarg}
+    end.
+
+listen(Pid) ->
+    listen(Pid,[{backlog, 5}]).
+
+accept(Pid) ->
+    {ok, _Socket} = call(Pid,accept).
+
+close({utp_socket, Pid}) ->
+    utp_socket:close(Pid);
+close(Pid)->
+    gen_server2:cast(Pid,close).
+
+incoming(Pid,Msg)->
+	gen_server2:cast(Pid,{incoming,Msg}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -63,11 +99,10 @@ init(Args) ->
 			{stop,{error,"Can not open UDP."}};
 		_->
 			{ok,UDPSocket} =  gen_udp:open(Port, [binary, {active, false}]),
-			UTPSockets = utp_ets:new({utp_sockets,Port},[set,{read_concurrency,true},
-				{write_concurrency,true},public]),
+			UTPSockets = ets:new(utp_sockets,[set,{read_concurrency,true},public]),
 			Pid = self(),
 			R = supervisor:start_child(utp_sup, dispatcher_sup_spec(Port,
-				DisptcherCount,[Pid,UTPSockets])),
+				DisptcherCount,[Pid,UTPSockets,UDPSocket])),
 			case R of 
 				{ok,Sup}->
 					State = #state{
@@ -76,7 +111,10 @@ init(Args) ->
 						cur_dispatcher = 1,
 						disptcher_sup = Sup,
 						udp_socket = UDPSocket,
-						utp_sockets =  UTPSockets
+						utp_sockets =  UTPSockets,
+						utp_socket_monitors = gb_trees:empty(),
+						utp_accepts = closed,
+						utp_accept_monitors = closed
 					},
 					{ok, State};
 				Error ->
@@ -98,6 +136,33 @@ init(Args) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_call({listen, Options}, _From, #state { utp_accepts = closed } = S) ->
+    Backlog = proplists:get_value(backlog, Options),
+    {reply, ok, S#state{ utp_accepts = new_acceptor_queue(Backlog),
+    	utp_accept_monitors = gb_trees:empty()}};
+handle_call({listen, _Opts}, _From, #state { utp_accepts = #accept_queue{} } = S) ->
+    {reply, {error, ealreadylistening}, S};
+
+
+handle_call(accept, _From, #state { utp_accepts = closed } = S) ->
+    {reply, {error, no_listen}, S};
+handle_call(accept, {Pid,_} = From, #state{ udp_socket = Socket,utp_socket_monitors = SMonitors,
+	utp_accepts = Q,utp_accept_monitors = AMonitors} = S) ->
+    {ok, Pairings, NewQ} = add_acceptor(From, Q),
+    A1 = demonitor_acceptor(Pid,Pairings,AMonitors),
+    NewAMonitors = case A1 of
+    			{M,true}->
+    				M;
+    			{M,false}->
+    				Ref = erlang:monitor(process,Pid),
+    				gb_trees:enter(Pid,Ref,M)
+    			end,
+	NewSMonitors = monitor_accepted(Socket,Pairings,SMonitors),
+    {noreply, S#state { utp_accepts = NewQ,utp_socket_monitors = NewSMonitors,
+                        utp_accept_monitors = NewAMonitors }};
+
+
 handle_call(_Request, _From, State) ->
 	Reply = ok,
 	{reply, Reply, State}.
@@ -112,14 +177,14 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast({close},State)->
+handle_cast(close,State)->
 	Port = State#state.port,
 	Socket = State#state.udp_socket,
-	R1 = supervisor:terminate_child(utp_sup,{utp_dispatcher_sup, Port}),
-	R2 = supervisor:delete_child(utp_sup,{utp_dispatcher_sup, Port}),
+	supervisor:terminate_child(utp_sup,{utp_dispatcher_sup, Port}),
+	supervisor:delete_child(utp_sup,{utp_dispatcher_sup, Port}),
 	gen_udp:close(Socket),
-	
 	{stop,normal,State};
+
 handle_cast(_Msg, State) ->
 	{noreply, State}.
 
@@ -144,8 +209,34 @@ handle_info({udp, Socket, Host, Port, Bin},State)->
 	inet:setopts(Socket,[{active,true}]),
 
 	NewState = State#state{cur_dispatcher = N},
-	{noreply,State};
+	{noreply,NewState};
 
+handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
+    AMonitors = State#state.utp_accept_monitors,
+    SMonitors = State#state.utp_socket_monitors,
+    Tid = State#state.utp_sockets,
+    Acceptors = State#state.utp_accepts,
+    R1 = gb_trees:lookup(Ref, SMonitors),
+    R2 = gb_trees:lookup(Pid,AMonitors),
+    NewSMonitors = case R1 of
+        {value,V}->
+            utp_utils:del_connection(V,Tid),
+            gb_trees:delete(Ref,SMonitors);
+        _->
+            SMonitors
+        end,
+    {NewAMonitors,NewAcceptors} = case R2 of
+        {value,_V} ->
+            {gb_trees:delete(Pid,AMonitors),
+            del_acceptor(Pid,Acceptors)};
+        _->
+            {AMonitors,Acceptors}
+        end,
+    {noreply, State#state {
+        utp_socket_monitors = NewSMonitors,
+        utp_accepts = NewAcceptors,
+        utp_accept_monitors = NewAMonitors
+    }};
 handle_info(_Info, State) ->
 	{noreply, State}.
 
@@ -177,79 +268,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-lookup(Key,Tid)->
-	case ets:match_object(Tid,Key) of 
-		[] ->
-			undefined;
-		[{Key,UTPSocket}] ->
-			UTPSocket
-	end.
-
-store({Key,Value},Tid)->
-	ets:insert(Tid,{Key,Value}).
-
-send_reset(Host,Port,ConnectionID,Header,State)->
-	Packet = utp_protocol:reset_packet(ConnectionID,Header#packet_ver_one_header.seq_nr),
-	gen_udp:send(State#state.udp_socket,Host,Port,Packet),
-	ok.
-
-process(Host,Port,Bin,State)->
-	R = utp_protocol:decode(Bin),
-	case R of
-		{error,Reason}->
-			ok;
-		{ok,Packet}->
-			process_internal(Host,Port,Packet,State)
-	end.
-process_internal(Host,Port,Packet,State)->
-	{Header,Extensions,Payload} = Packet,
-	% id is either our recv id or our send id
-	% if it's our send id, and we initiated the connection, our recv id is id + 1
-	% if it's our send id, and we did not initiate the connection, our recv id is id - 1
-	% we have to check every case
-	ConnectionID  = Header#packet_ver_one_header.connection_id,
-	Type = Header#packet_ver_one_header.type,
-	process_internal(Host,Port,Type,ConnectionID,Header,Extensions,Payload,State).
-
-process_internal(Host,_Port,?UTP_PACKET_ST_RESET,ConnectionID,Header,Extensions,Payload,State)->
-	Pid0 = lookup({Host,ConnectionID},State#state.utp_sockets),
-	Pid1 = lookup({Host,ConnectionID + 1},State#state.utp_sockets),
-	Pid2 = lookup({Host,ConnectionID - 1},State#state.utp_sockets),
-	case {Pid0,Pid1,Pid2} of
-		{undefined,undefined,undefined}->
-			ok;
-		{undefined,undefined,_}->
-			gen_fsm:send_event(Pid2,{?UTP_PACKET_ST_RESET,Header,Extensions,Payload});
-		{undefined,_,_}->
-			gen_fsm:send_event(Pid1,{?UTP_PACKET_ST_RESET,Header,Extensions,Payload});
-		{_,_,_}->
-			gen_fsm:send_event(Pid0,{?UTP_PACKET_ST_RESET,Header,Extensions,Payload})
-	end;
-	
-process_internal(Host,Port,?UTP_PACKET_ST_SYN,ConnectionID,Header,Extensions,Payload,State)->
-	Pid = lookup({Host,ConnectionID + 1},State#state.utp_sockets),
-	case Pid of
-		undefined ->
-			try
-				UTPSocket = utp_socket_sup:create_socket(Host,Port,self()),
-				store({{Host,ConnectionID + 1},UTPSocket},State#state.utp_sockets),
-				gen_fsm:send_event(UTPSocket,{?UTP_PACKET_ST_SYN,Header,Extensions,Payload})
-			catch 
-				_:_ ->
-					ok
-			end;
-		_->
-			ok
-	end;
-
-process_internal(Host,Port,Type,ConnectionID,Header,Extensions,Payload,State)->
-	Pid = lookup({Host,ConnectionID},State#state.utp_sockets),
-	case Pid of
-		undefined ->
-			send_reset(Host,Port,ConnectionID,Header,State);
-		_->
-			gen_fsm:send_event(Pid,{Type,Header,Extensions,Payload})
-	end.
+call(Pid,Msg) ->
+    gen_server2:call(Pid, Msg, infinity).
 
 dispatcher_sup_spec(Port,DisptcherCount,Opts)
 		when is_integer(DisptcherCount) ->
@@ -278,4 +298,90 @@ next_dispatcher(Sup,N,Max)->
 			{Pid,next_one(N,Max)}
 	end.
 
+validate_listen_opts([]) ->
+    ok;
+validate_listen_opts([{backlog, N} | R]) ->
+    case is_integer(N) of
+        true ->
+            validate_listen_opts(R);
+        false ->
+            badarg
+    end;
+validate_listen_opts([{force_seq_no, N} | R]) ->
+    case is_integer(N) of
+        true when N >= 0,
+                  N =< 16#FFFF ->
+            validate_listen_opts(R);
+        true ->
+            badarg;
+        false ->
+            badarg
+    end;
+validate_listen_opts([{trace_counters, B} | R]) when is_boolean(B) ->
+    validate_listen_opts(R);
+validate_listen_opts([_U | R]) ->
+    validate_listen_opts(R).
 
+
+new_acceptor_queue(Max) ->
+    #accept_queue{ 
+    	waittings = queue:new(),
+        incomings = queue:new(),
+        waittings_size = 0,
+        backlog = Max }.
+
+del_acceptor(Pid,#accept_queue{ waittings = Waittings,waittings_size = Len } = Q)->
+   NW = queue:filter(fun({APid,_}) -> APid =/= Pid end,Waittings),
+   Q#accept_queue{waittings = NW,waittings_size = Len - 1}.
+
+add_acceptor(From,#accept_queue { waittings = Waittings,waittings_size = Len } = Q) ->
+    try_accept(Q#accept_queue{waittings = queue:in(From, Waittings),
+    	waittings_size = Len + 1}, []).
+
+try_accept(#accept_queue { waittings = Waittings,
+                             incomings = Incomings,
+                             waittings_size = Len } = Q, Pairings) ->
+    case {queue:out(Waittings), queue:out(Incomings)} of
+        {{{value, Acceptor}, W1}, {{value, Packet}, I1}} ->
+            try_accept(Q#accept_queue { waittings = W1,
+       						incomings = I1,waittings_size = Len - 1 },
+                        [{Acceptor, Packet} | Pairings]);
+        _ ->
+            {ok, Pairings, Q} % Can't do anymore work for now
+    end.
+
+accept(Socket, From, {Host,Port,SYN}) ->
+    {ok, Pid} = utp_socket_sup:create_utp_socket(Socket,Host,Port),
+    %% We should register because we are the ones that can avoid
+    %% the deadlock here
+    %% @todo This call can in principle fail due
+    %%   to a conn_id being in use, but we will
+    %%   know if that happens.
+    {Header,_Ext,_Payload} = SYN,
+    utp_socket:accept(Pid, SYN),
+    gen_server2:reply(From, {ok, {utp_socket, Pid}}),
+    {Pid,{Host,Port,Header#packet_ver_one_header.connection_id}}.
+
+demonitor_acceptor(Pid,Pairings,AMonitors)->
+	Fun = fun({APid,_ARef},{M0,Has})->
+    			case gb_trees:lookup(APid,M0) of
+    				{value,V} ->
+    					erlang:demonitor(V),
+    					{gb_trees:delete(APid,M0),Has};
+    				_->
+    					case APid of
+    						Pid ->
+    							{M0,true};
+    						_->
+    							{M0,false}
+    					end
+    			end
+    		end,
+	lists:foldl(Fun,{AMonitors,false},Pairings).
+
+monitor_accepted(Socket,Pairings,SMonitors)->
+ Mappers = [accept(Socket, Acc, SYN) || {Acc, SYN} <- Pairings],
+ lists:foldl(fun({Pid, CID}, Monitors) ->
+ 			Ref = erlang:monitor(process, Pid),
+    		gb_trees:enter(Ref, CID, Monitors)
+    	end,SMonitors,Mappers).
