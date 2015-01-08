@@ -8,7 +8,7 @@
 
 
 -record(utp_rtt_context, {
-        rtt = 0 :: integer(),
+        rtt = ?UTP_DEFAULT_RTT * 2 :: integer(),
         var = ?UTP_DEFAULT_RTT :: integer()
     }).
 
