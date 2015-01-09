@@ -13,38 +13,27 @@
 -behaviour(gen_fsm).
 
 %% API
--export([start_link/3]).
+-export([start_link/1]).
 
 %% gen_fsm callbacks
 -export([init/1, state_name/2, state_name/3, handle_event/3,
 		 handle_sync_event/4, handle_info/3, terminate/3, code_change/4]).
+-export([idle/2,idle/3]).
 
 -record(utp_context,{
-		% how much of the window is used, number of bytes in-flight
-		% packets that have not yet been sent do not count, packets
-		% that are marked as needing to be re-sent (due to a timeout)
-		% don't count either
-		cur_window,
-		last_rcv_window,
-		max_window, %maximum window size, in bytes
-		sndbuf, %UTP_SNDBUF setting, in bytes
-		rcvbuf,	%UTP_RCVBUF setting, in bytes
-		conn_seed,
+		remote_addr,
+		remote_port,
 		conn_id_recv,
-		conn_id_send,
-		reply_micro,
-		eof_nr,
-		ack_nr,	%All sequence numbers up to including this have been properly received by us
-		seq_nr, %This is the sequence number for the next packet to be sent.
-		fast_resend_seq_nr,
-		utp_mtu_context
+		conn_id_send
 	}).
 -record(state, {
 		udp_socket,
-		remote_addr,
-		remote_port,
-		state,
-		context
+		retransmit_timeout,
+		connector,
+		utp_mtu_context,
+		utp_wnd_context,
+		utp_buffer_context,
+		utp_context
 	}).
 
 %%%===================================================================
@@ -60,8 +49,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(UDPSocket,Host,Port) ->
-	gen_fsm:start_link(?MODULE, [UDPSocket,Host,Port], []).
+start_link(UDPSocket) ->
+	gen_fsm:start_link(?MODULE, [UDPSocket], []).
 
 %%%===================================================================
 %%% gen_fsm callbacks
@@ -80,16 +69,20 @@ start_link(UDPSocket,Host,Port) ->
 %%                     {stop, StopReason}
 %% @end
 %%--------------------------------------------------------------------
-init([UDPSocket,Host,Port]) ->
+init([UDPSocket]) ->
 	MTUContext = utp_mtu:new(),
-	Context = #utp_context{utp_mtu_context = MTUContext},
+	UTPContext = #utp_context{},
+	WndContext = utp_window:new(),
+	BufferContext = utp_buffer:new(),
 	State = #state{
 		udp_socket = UDPSocket,
-		remote_addr = Host,
-		remote_port = Port,
-		context = Context
+		connector = undefined,
+		utp_mtu_context = MTUContext,
+		utp_wnd_context = WndContext,
+		utp_buffer_context = BufferContext,
+		utp_context = UTPContext
 	},
-	{ok, state_name,State}.
+	{ok,idle,State}.
 
 
 %%--------------------------------------------------------------------
@@ -107,6 +100,11 @@ init([UDPSocket,Host,Port]) ->
 %%                   {stop, Reason, NewState}
 %% @end
 %%--------------------------------------------------------------------
+idle(close, S) ->
+    {next_state,destroy, S, 0};
+idle(_Msg, S) ->
+    {next_state, idle, S}.
+
 state_name(_Event, State) ->
 	{next_state, state_name, State}.
 
@@ -128,6 +126,57 @@ state_name(_Event, State) ->
 %%                   {stop, Reason, Reply, NewState}
 %% @end
 %%--------------------------------------------------------------------
+
+idle({connect,Host,Port,ConnectionID},From, State = #state {
+	connector = undefined,utp_mtu_context = MTU,
+	utp_wnd_context = Wnd,utp_buffer_context = Buffer,utp_context = Context}) ->
+    NewContext = Context#utp_context{
+    	remote_addr = Host,
+    	remote_port = Port,
+    	conn_id_recv = ConnectionID,
+    	conn_id_send = ConnectionID + 1
+    },
+    MaxWnd = utp_mtu:packet_size(MTU),
+    NewWnd = utp_window:update_max_window(Wnd,MaxWnd),
+    SeqNo = utp_util:random_id(),
+    NewBuffer = utp_buffer:set_seq(Buffer,SeqNo + 1),
+    %send sync
+    RTO = set_retransmit_timer(utp_window:rto(NewWnd), undefined),
+    {next_state, syn_sent,
+    State#state{ retransmit_timeout = RTO, 
+                  connector = 	From,
+                  utp_wnd_context = NewWnd,
+                  utp_buffer_context  = NewBuffer,
+                  utp_context = NewContext
+                }};
+
+idle({accept, {Host,Port,SYN}}, _From, #state {connector = undefined,
+	utp_wnd_context = Wnd,utp_buffer_context = Buffer,utp_context = Context} = State) ->
+    ConnSndID = SYN#packet_ver_one_header.connection_id,
+    ConnRCVID = ConnSndID + 1,
+
+    NewContext = Context#utp_context{
+    	remote_addr = Host,
+    	remote_port = Port,
+    	conn_id_recv = ConnRCVID,
+    	conn_id_send = ConnSndID
+    },
+    SeqNo = utp_util:random_id(),
+    AdvertisedWindow = SYN#packet_ver_one_header.wnd_size,
+    NewWnd = utp_window:update_advertised_window(Wnd,AdvertisedWindow),
+    Buffer0 = utp_buffer:set_ack(Buffer,SYN#packet_ver_one_header.ack_nr + 1),
+    NewBuffer = utp_buffer:set_ack(Buffer0,SeqNo + 1),
+    %send ack
+    %% @todo retransmit timer here?
+    start_tick_timer(),
+    {reply, ok, connected,
+            State#state {utp_wnd_context = NewWnd,
+            	utp_buffer_context = NewBuffer,
+            	utp_context = NewContext}};
+
+idle(_Msg, _From, State) ->
+    {reply, idle, {error, enotconn}, State}.
+
 state_name(_Event, _From, State) ->
 	Reply = ok,
 	{reply, Reply, state_name, State}.
@@ -214,5 +263,21 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+set_retransmit_timer(N, Timer) ->
+    set_retransmit_timer(N, N, Timer).
+set_retransmit_timer(N, K, undefined) ->
+    Ref = gen_fsm:start_timer(N, {retransmit_timeout, K}),
+    {set, Ref};
+set_retransmit_timer(N, K, {set, Ref}) ->
+    gen_fsm:cancel_timer(Ref),
+    NewRef = gen_fsm:start_timer(N, {retransmit_timeout, K}),
+    {set, NewRef}.
 
+clear_retransmit_timer(undefined) ->
+    undefined;
+clear_retransmit_timer({set, Ref}) ->
+    gen_fsm:cancel_timer(Ref),
+    undefined.
 
+start_tick_timer()->
+	gen_fsm:start_timer(500, tick_timer).

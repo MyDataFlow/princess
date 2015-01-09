@@ -384,14 +384,14 @@ try_accept(#accept_queue { waittings = Waittings,
             {ok, Pairings, Q} % Can't do anymore work for now
     end.
 
-accept(Sup,Socket,From, {Host,Port,SYN}) ->
-    {ok, Pid} = utp_socket_sup:create_utp_socket(Sup,Socket,Host,Port),
+accept(Sup,Socket,From, SYN) ->
+    {ok, Pid} = utp_socket_sup:create_utp_socket(Sup,Socket),
     %% We should register because we are the ones that can avoid
     %% the deadlock here
     %% @todo This call can in principle fail due
     %%   to a conn_id being in use, but we will
     %%   know if that happens.
-    {Header,_Ext,_Payload} = SYN,
+    {Host,Port,{Header,_Ext,_Payload}} = SYN,
     utp_socket:accept(Pid, SYN),
     gen_server2:reply(From, {ok, {utp_socket, Pid}}),
     {Pid,{Host,Port,Header#packet_ver_one_header.connection_id}}.
@@ -419,6 +419,7 @@ monitor_accepted(Sup,Socket,Pairings,SMonitors)->
  			Ref = erlang:monitor(process, Pid),
     		gb_trees:enter(Ref, CID, Monitors)
     	end,SMonitors,Mappers).
+
 terminate_supervisor(Port)->
     supervisor:terminate_child(utp_sup,{utp_socket_sup,Port}),
     supervisor:delete_child(utp_sup,{utp_socket_sup,Port}),

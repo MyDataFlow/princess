@@ -8,8 +8,9 @@
 
 -export([canonicalize_address/1]).
 -export([lookup_connection/2,add_connection/2,del_connection/2]).
--export([send/4,send_aux/5]).
--export([send_reset/5]).
+-export([send/4,send_aux/5,send_reset/5]).
+-export([clamp/3]).
+-export([random_id/0]).
 
 %% @doc `bit16(Expr)' performs `Expr' modulo 65536
 %% @end
@@ -30,7 +31,10 @@ canonicalize_address(S) when is_list(S) ->
 canonicalize_address({_, _, _, _} = Addr) ->
     Addr.
 %% ----------------------------------------------------------------------
-
+clamp(Val, Min, _Max) when Val < Min -> Min;
+clamp(Val, _Min, Max) when Val > Max -> Max;
+clamp(Val, _Min, _Max) -> Val.
+%% ----------------------------------------------------------------------
 lookup_connection(Key,Tid)->
 	case ets:match_object(Tid,Key) of 
 		[] ->
@@ -44,7 +48,7 @@ add_connection({Key,Value},Tid)->
 
 del_connection(Key,Tid)->
     ets:delete(Tid,Key).
-
+%% ----------------------------------------------------------------------
 send_reset(Socket, Host, Port, ConnectionID, AckNo) ->
     Header = #packet_ver_one_header{ 
         type = ?UTP_PACKET_ST_RESET,
@@ -80,3 +84,7 @@ send_aux(N, Socket, Host, Port, Payload) ->
         {error, Reason} ->
             {error, Reason}
     end.
+%% ----------------------------------------------------------------------
+random_id() ->
+    <<N:16/integer>> = crypto:rand_bytes(2),
+    N.

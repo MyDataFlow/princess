@@ -3,12 +3,12 @@
 
 -export([
          rto/1,
-         ack_packet/4
+         ack_rtt/4
         ]).
 
 
 -record(utp_rtt_context, {
-        rtt = ?UTP_DEFAULT_RTT * 2 :: integer(),
+        rtt = 0 :: integer(),
         var = ?UTP_DEFAULT_RTT :: integer()
     }).
 
@@ -61,7 +61,7 @@ rto(#utp_rtt_context{ rtt = RTT, var = Var}) ->
 
 
 %% ACKnowledge an incoming packet
-ack_packet(History, RTT, SendTime, AckedTime) ->
+ack_rtt(History, RTT, SendTime, AckedTime) ->
     Estimate = utp_util:bit32(AckedTime - SendTime),
 
     NewRTT = update(Estimate, RTT),

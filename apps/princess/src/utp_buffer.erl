@@ -7,7 +7,7 @@
 -export([ack_packet/2]).
 
 -record(utp_packet,{
-			data,
+          data,
         	transmissions = 0,
         	send_time = 0 :: integer(),
         	need_resend = false :: boolean()

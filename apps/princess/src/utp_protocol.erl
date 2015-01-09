@@ -1,7 +1,7 @@
 -module(utp_protocol).
 
 -include("utp_packet.hrl").
--export([encode/3,decode/1,random_id/0,validate/1]).
+-export([encode/3,decode/1,validate/1]).
 %-record(packet_ver_one_header,{
 %    type,
 %    version,
@@ -14,9 +14,6 @@
 %    ack_nr
 %  }).
 
-random_id() ->
-    <<N:16/integer>> = crypto:rand_bytes(2),
-    N.
 
 validate(#packet_ver_one_header{ 
         seq_nr = SeqNo,
