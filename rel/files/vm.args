@@ -17,10 +17,16 @@
 
 ## Tweak GC to run more often
 ##-env ERL_FULLSWEEP_AFTER 10
-#+MBsbct 2147483648
-+MBlmbcs 512
-#+MBsmbcs 1024
++MBsbct 1073741824
++MBlmbcs 1024
++MBsmbcs 512
++MHsbct 1073741824
++MHlmbcs 1024
++MHsmbcs 512
++MTsbct 1073741824
++MTlmbcs 1024
++MTsmbcs 512
 -smp
-+S 10:10
++S 2:2
 -sub true
 -scl false
