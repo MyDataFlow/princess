@@ -13,10 +13,11 @@
 +A 10
 
 ## Increase number of concurrent ports/sockets
--env ERL_MAX_PORTS 40960
+-env ERL_MAX_PORTS 65535
 
 ## Tweak GC to run more often
 ##-env ERL_FULLSWEEP_AFTER 10
+
 +MBsbct 1073741824
 +MBlmbcs 1024
 +MBsmbcs 512
@@ -26,7 +27,5 @@
 +MTsbct 1073741824
 +MTlmbcs 1024
 +MTsmbcs 512
--smp
-+S 2:2
 -sub true
 -scl false
