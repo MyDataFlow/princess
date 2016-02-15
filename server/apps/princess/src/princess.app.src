@@ -5,8 +5,7 @@
   {registered, []},
   {applications, [
                   kernel,
-                  stdlib,
-		  		  ranch
+                  stdlib
                  ]},
   {mod, { princess_app, []}},
   {env, []}

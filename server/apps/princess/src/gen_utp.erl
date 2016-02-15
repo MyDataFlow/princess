@@ -22,8 +22,8 @@
 -export([incoming/2]).
 
 -record(accept_queue,{ 
-        	waittings      :: queue(),
-        	incomings      :: queue(),
+        	waittings,
+        	incomings,     
         	len            :: integer(),
         	backlog        :: integer() 
         }).

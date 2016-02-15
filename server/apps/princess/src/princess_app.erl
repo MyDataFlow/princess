@@ -15,9 +15,6 @@ start(_StartType, _StartArgs) ->
 	ok = application:start(asn1),
 	ok = application:start(public_key),
 	ok = application:start(ssl),
-	application:start(ranch),
-	hm_mnesia:ensure_mnesia(),
-	start_listener(),
 	princess_sup:start_link().
 
 stop(_State) ->

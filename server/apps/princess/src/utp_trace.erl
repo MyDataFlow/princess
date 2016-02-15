@@ -23,7 +23,7 @@
 -define(SERVER, ?MODULE). 
 
 -record(state, { enabled = false :: boolean(),
-                 map = dict:new():: dict() }).
+                 map = dict:new() }).
 
 %%%===================================================================
 %%% API

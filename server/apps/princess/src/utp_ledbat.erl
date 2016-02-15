@@ -36,10 +36,10 @@
         ]).
 
 -record(ledbat, {
-          base_history_q :: queue(),
+          base_history_q ,
           delay_base :: integer(),
           last_sample :: integer(),
-          cur_delay_history_q   :: queue() }).
+          cur_delay_history_q  }).
 
 -opaque t() :: #ledbat{}.
 
