@@ -9,3 +9,4 @@
 -define(SEQ_LEQ(A , B) , (((A - B) band ?SEQ_MAX) =< 0)).
 -define(SEQ_GT(A , B) , (((A - B) band ?SEQ_MAX) > 0)).
 -define(SEQ_GEQ(A , B) , (((A - B) band ?SEQ_MAX) >= 0)).
+-define(SEQ_NEXT(A) , (((A + 1) band ?SEQ_MAX) >= 0)).
